@@ -1,0 +1,92 @@
+import os
+import subprocess
+from html.parser import HTMLParser
+
+from conftest import ROOT, app_argv, free_port
+
+
+def test_health_is_ok_without_redirect(start_app):
+    r = start_app().get("/health")
+    assert r.status == 200
+    assert r.body == b"ok"
+    assert r.headers["Location"] is None
+
+
+def test_build_id_returns_the_candidate_verbatim(start_app):
+    r = start_app(FACTORY_RUNTIME_CANDIDATE="cand-123").get("/build-id")
+    assert r.status == 200
+    assert r.headers["Content-Type"] == "text/plain; charset=utf-8"
+    assert r.body == b"cand-123"
+
+
+def test_build_id_without_candidate_is_not_empty(start_app):
+    r = start_app().get("/build-id")
+    assert r.status == 200
+    assert r.body.strip()
+
+
+VOID_ELEMENTS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
+
+
+class TextById(HTMLParser):
+    """id を持つ要素ごとに、その中の文字列を集める。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.open: list[str | None] = []
+        self.text: dict[str, str] = {}
+
+    def handle_starttag(self, tag, attrs):
+        if tag in VOID_ELEMENTS:
+            return
+        element_id = dict(attrs).get("id")
+        if element_id is not None:
+            self.text[element_id] = ""
+        self.open.append(element_id)
+
+    def handle_endtag(self, tag):
+        self.open.pop()
+
+    def handle_data(self, data):
+        for element_id in self.open:
+            if element_id is not None:
+                self.text[element_id] += data
+
+
+def test_page_shows_the_three_areas(start_app):
+    r = start_app().get("/")
+    assert r.status == 200
+    assert r.headers["Content-Type"].startswith("text/html")
+    page = r.body.decode("utf-8")
+    for heading in ("会話", "履歴", "サーバの状態"):
+        assert heading in page
+    parser = TextById()
+    parser.feed(page)
+    assert {"chat", "history", "status"} <= parser.text.keys()
+    assert "会話がまだありません" in parser.text["history"]
+
+
+def test_listens_on_loopback_only(start_app):
+    app = start_app()
+    assert app.startup_line == f"listening on http://127.0.0.1:{app.port}"
+
+
+def run_until_exit(**env: str | None) -> subprocess.CompletedProcess[str]:
+    merged = {**os.environ, **env}
+    environ = {k: v for k, v in merged.items() if v is not None}
+    return subprocess.run(
+        app_argv(free_port()), check=False, cwd=ROOT, env=environ,
+        capture_output=True, text=True, encoding="utf-8", timeout=15,
+    )
+
+
+def test_missing_db_path_exits_2():
+    result = run_until_exit(CONSOLE_DB_PATH=None)
+    assert result.returncode == 2
+    assert "CONSOLE_DB_PATH" in result.stderr
+
+
+def test_unknown_llm_exits_2():
+    result = run_until_exit(CONSOLE_LLM="bogus")
+    assert result.returncode == 2
+    assert "CONSOLE_LLM" in result.stderr
