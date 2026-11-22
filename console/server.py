@@ -1,6 +1,7 @@
 """127.0.0.1 で待ち受ける HTTP サーバと、工場との契約エンドポイント。"""
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -8,7 +9,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from console import config
+from console import config, history
+from console.db import Database
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -42,8 +44,13 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(b"ok", "text/plain; charset=utf-8")
         elif path == "/build-id":
             self.reply(self.server.build_id.encode("utf-8"), "text/plain; charset=utf-8")
+        elif path == "/api/conversations":
+            self.reply_json(history.list_conversations(self.server.db))
         else:
             self.send_error(404)
+
+    def reply_json(self, value: object) -> None:
+        self.reply(json.dumps(value, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
 
     def reply(self, body: bytes, content_type: str) -> None:
         self.send_response(200)
@@ -56,9 +63,10 @@ class Handler(BaseHTTPRequestHandler):
 class ConsoleServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, port: int) -> None:
+    def __init__(self, port: int, db: Database) -> None:
         super().__init__((HOST, port), Handler)
         self.build_id = build_id()
+        self.db = db
 
 
 def main(argv: list[str]) -> int:
@@ -66,11 +74,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = parser.parse_args(argv)
     try:
-        config.load()
+        settings = config.load()
     except config.ConfigError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    with ConsoleServer(args.port) as server:
+    with Database(settings.db_path) as db, ConsoleServer(args.port, db) as server:
         print(f"listening on http://{HOST}:{server.server_address[1]}", flush=True)
         try:
             server.serve_forever()

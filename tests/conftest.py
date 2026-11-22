@@ -51,6 +51,11 @@ class Response:
 class RunningApp:
     port: int
     startup_line: str
+    proc: subprocess.Popen
+
+    def stop(self) -> None:
+        self.proc.terminate()
+        self.proc.wait(timeout=10)
 
     def get(self, path: str) -> Response:
         """リダイレクトを辿らずに GET する。"""
@@ -83,7 +88,7 @@ def start_app():
             pytest.fail(f"{BOOT_TIMEOUT_S} 秒たっても起動ログが出ない")
         if not line:
             pytest.fail(f"起動に失敗した (終了コード {proc.wait()}): {proc.stderr.read()}")
-        return RunningApp(port=port, startup_line=line.rstrip("\n"))
+        return RunningApp(port=port, startup_line=line.rstrip("\n"), proc=proc)
 
     yield start
     for proc in procs:
