@@ -2,8 +2,10 @@
 
 import sqlite3
 import threading
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Literal, Self, get_args
 
 Role = Literal["user", "assistant"]
@@ -42,6 +44,27 @@ class Message:
 def now() -> str:
     # 桁を固定する。isoformat() はマイクロ秒が 0 だと小数部を省き、文字列の順が時刻の順でなくなる。
     return datetime.now(UTC).isoformat(timespec="microseconds")
+
+
+def check(path: str) -> bool:
+    """path の記録を開き、会話の表を読み、書き込みを 1 回してロールバックする。すべてできたら True。
+
+    記録の中身は変えない。ファイルが無ければ作らない (mode=rw)。
+    """
+    try:
+        uri = Path(path).absolute().as_uri() + "?mode=rw"
+        with closing(sqlite3.connect(uri, uri=True, autocommit=True)) as conn:
+            # 先に書き込みのロックを取る。読んでから書き込みに上がると、他の書き込みと重なったときに待たずに失敗する。
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute("SELECT 1 FROM conversations LIMIT 1").fetchall()
+                at = now()
+                conn.execute("INSERT INTO conversations (created_at, updated_at) VALUES (?, ?)", (at, at))
+            finally:
+                conn.execute("ROLLBACK")
+    except sqlite3.Error:
+        return False
+    return True
 
 
 class Database:

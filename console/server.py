@@ -4,13 +4,14 @@ import argparse
 import errno
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from console import chat, config, history, llm
+from console import chat, config, history, llm, status
 from console.db import Database
 
 HOST = "127.0.0.1"
@@ -34,6 +35,15 @@ def build_id() -> str:
     return commit if result.returncode == 0 and commit else "unknown"
 
 
+def open_record(path: str) -> Database | None:
+    try:
+        return Database(path)
+    except sqlite3.Error as e:
+        # 記録を開けなくても待ち受ける。サーバの状態で「会話の記録」が異常と分かる (#8)。
+        print(f"warning: 会話の記録 {path} を開けません ({e})", file=sys.stderr, flush=True)
+        return None
+
+
 class Handler(BaseHTTPRequestHandler):
     server: ConsoleServer
 
@@ -46,7 +56,12 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/build-id":
             self.reply(self.server.build_id.encode("utf-8"), "text/plain; charset=utf-8")
         elif path == "/api/conversations":
-            self.reply_json(history.list_conversations(self.server.db))
+            if self.server.db is None:
+                self.reply_db_unavailable()
+            else:
+                self.reply_json(history.list_conversations(self.server.db))
+        elif path == "/api/status":
+            self.reply_json(status.check(self.server.server_address[1], self.server.db_path, self.server.responder))
         else:
             self.send_error(404)
 
@@ -64,6 +79,9 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             self.reply_json({"error": "invalid_request"}, 400)
             return
+        if self.server.db is None:
+            self.reply_db_unavailable()
+            return
         try:
             # 記録してコミットし終えてから応答を返す。応答は全文を 1 回で返す (ストリーミングしない)。
             self.reply_json(chat.send(self.server.db, self.server.responder, request))
@@ -72,6 +90,9 @@ class Handler(BaseHTTPRequestHandler):
         except llm.Unreachable:
             # 何も記録していない。応答の形は S4 (#12) の ticket が決めたもの。画面の表示は #12 で足す。
             self.reply_json({"error": "llm_unavailable", "message": "AI に繋がりません"}, 503)
+
+    def reply_db_unavailable(self) -> None:
+        self.reply_json({"error": "db_unavailable", "message": "会話の記録を開けません"}, 503)
 
     def reply_json(self, value: object, status: int = 200) -> None:
         body = json.dumps(value, ensure_ascii=False).encode("utf-8")
@@ -88,11 +109,21 @@ class Handler(BaseHTTPRequestHandler):
 class ConsoleServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, port: int, db: Database, responder: llm.Responder) -> None:
+    # bind に失敗すると、__init__ が db を設定する前に server_close が呼ばれる。
+    db: Database | None = None
+
+    def __init__(self, port: int, db_path: str, responder: llm.Responder) -> None:
+        # 記録を開くのはポートを取れてから。ポート使用中なら記録に触れずに 1 行のエラーで終わる (#16)。
         super().__init__((HOST, port), Handler)
         self.build_id = build_id()
-        self.db = db
+        self.db_path = db_path
+        self.db = open_record(db_path)
         self.responder = responder
+
+    def server_close(self) -> None:
+        super().server_close()
+        if self.db is not None:
+            self.db.close()
 
 
 def main(argv: list[str]) -> int:
@@ -104,18 +135,17 @@ def main(argv: list[str]) -> int:
     except config.ConfigError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    with Database(settings.db_path) as db:
+    try:
+        server = ConsoleServer(args.port, settings.db_path, llm.responder(settings.llm))
+    except OSError as e:
+        if e.errno != errno.EADDRINUSE:
+            raise
+        print(f"error: ポート {args.port} はすでに使われています", file=sys.stderr)
+        return 2
+    with server:
+        print(f"listening on http://{HOST}:{server.server_address[1]}", flush=True)
         try:
-            server = ConsoleServer(args.port, db, llm.responder(settings.llm))
-        except OSError as e:
-            if e.errno != errno.EADDRINUSE:
-                raise
-            print(f"error: ポート {args.port} はすでに使われています", file=sys.stderr)
-            return 2
-        with server:
-            print(f"listening on http://{HOST}:{server.server_address[1]}", flush=True)
-            try:
-                server.serve_forever()
-            except KeyboardInterrupt:
-                pass
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
     return 0

@@ -34,6 +34,11 @@
   #composer { display: flex; gap: 0.5rem; }
   #composer textarea { flex: 1; resize: vertical; min-height: 3rem; font: inherit; padding: 0.5rem; }
   #composer button { font: inherit; padding: 0 1rem; }
+  #status-items { list-style: none; margin: 0 0 0.75rem; padding: 0; }
+  #status-items li { display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid #eee; }
+  .state.ok { color: #1a7f37; }
+  .state.ng, .status-error { color: #c62828; font-weight: bold; }
+  #recheck { font: inherit; }
 </style>
 </head>
 <body>
@@ -52,6 +57,9 @@
   </section>
   <section id="status">
     <h2>サーバの状態</h2>
+    <ul id="status-items"></ul>
+    <p class="status-error" hidden>状態を読めませんでした</p>
+    <button type="button" id="recheck">再確認</button>
   </section>
 <script>
   const historyList = document.getElementById("conversations");
@@ -149,6 +157,42 @@
       sendMessage();
     }
   });
+
+  const statusList = document.getElementById("status-items");
+  const statusError = document.querySelector("#status .status-error");
+  const recheckButton = document.getElementById("recheck");
+
+  async function loadStatus() {
+    // ボタンは読み終えるまで押せないので、読み直しは重ならない。
+    recheckButton.disabled = true;
+    try {
+      const response = await fetch("/api/status");
+      if (!response.ok) throw new Error(`GET /api/status: ${response.status}`);
+      const { items } = await response.json();
+      statusList.replaceChildren(...items.map((item) => {
+        const row = document.createElement("li");
+        row.dataset.key = item.key;
+        const label = document.createElement("span");
+        label.textContent = item.label;
+        const state = document.createElement("span");
+        state.className = `state ${item.ok ? "ok" : "ng"}`;
+        state.textContent = item.ok ? "正常" : "異常";
+        row.append(label, state);
+        return row;
+      }));
+      statusError.hidden = true;
+    } catch (error) {
+      // 前の結果を残すと、読めていないのに「正常」と見えてしまう。
+      statusList.replaceChildren();
+      statusError.hidden = false;
+      throw error;
+    } finally {
+      recheckButton.disabled = false;
+    }
+  }
+
+  recheckButton.addEventListener("click", loadStatus);
+  loadStatus();
 </script>
 </body>
 </html>
