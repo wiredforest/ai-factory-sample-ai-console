@@ -1,6 +1,7 @@
 """127.0.0.1 で待ち受ける HTTP サーバと、工場との契約エンドポイント。"""
 
 import argparse
+import errno
 import json
 import os
 import subprocess
@@ -78,10 +79,18 @@ def main(argv: list[str]) -> int:
     except config.ConfigError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    with Database(settings.db_path) as db, ConsoleServer(args.port, db) as server:
-        print(f"listening on http://{HOST}:{server.server_address[1]}", flush=True)
+    with Database(settings.db_path) as db:
         try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            pass
+            server = ConsoleServer(args.port, db)
+        except OSError as e:
+            if e.errno != errno.EADDRINUSE:
+                raise
+            print(f"error: ポート {args.port} はすでに使われています", file=sys.stderr)
+            return 2
+        with server:
+            print(f"listening on http://{HOST}:{server.server_address[1]}", flush=True)
+            try:
+                server.serve_forever()
+            except KeyboardInterrupt:
+                pass
     return 0
