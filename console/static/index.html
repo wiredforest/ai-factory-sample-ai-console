@@ -29,7 +29,7 @@
 <body>
   <section id="history">
     <h2>履歴</h2>
-    <p class="empty">会話がまだありません</p>
+    <p class="empty" hidden>会話がまだありません</p>
     <ul id="conversations"></ul>
   </section>
   <section id="chat">
@@ -68,6 +68,7 @@
       item.append(title, time);
       return item;
     }));
+    // 空の表示は、一覧を読み終えてから出す。先に出すと、会話があるのに一瞬「まだありません」と見える。
     historyEmpty.hidden = conversations.length > 0;
   }
 
