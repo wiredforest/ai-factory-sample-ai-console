@@ -71,8 +71,8 @@
     {
       "id": "config-error-exits-zero",
       "file": "console/server.py",
-      "find": "return 2",
-      "replace": "return 0",
+      "find": "print(f\"error: {e}\", file=sys.stderr)\n        return 2",
+      "replace": "print(f\"error: {e}\", file=sys.stderr)\n        return 0",
       "why": "設定の誤りで起動できないのに成功として終わっても通るなら、起動の失敗が黙って見過ごされる。"
     },
     {
@@ -92,9 +92,9 @@
     {
       "id": "empty-history-message-hidden",
       "file": "console/static/index.html",
-      "find": "<p class=\"empty\">",
-      "replace": "<p class=\"empty\" hidden>",
-      "why": "データ (文言) は HTML に残るが画面には出ない。これが通るなら、画面に見えることを確かめる段が無く、HTML の文字列だけで合格している。"
+      "find": "historyEmpty.hidden = conversations.length > 0;",
+      "replace": "historyEmpty.hidden = true;",
+      "why": "会話が 1 件も無いのに「会話がまだありません」が画面に出ない (文言は HTML に残る)。これが通るなら、画面に見えることを確かめる段が無く、HTML の文字列だけで合格している。"
     },
     {
       "id": "empty-history-message-invisible",
@@ -102,6 +102,27 @@
       "find": ".empty { color: #777; }",
       "replace": ".empty { color: #fff; }",
       "why": "履歴の白い背景に白い文字で、要素も文言もあるのに読めない。これが通るなら、見た目は人のレビューにしか守られていない (MISSION の責任範囲外どおりかを確かめる)。"
+    },
+    {
+      "id": "port-in-use-exits-zero",
+      "file": "console/server.py",
+      "find": "はすでに使われています\", file=sys.stderr)\n            return 2",
+      "replace": "はすでに使われています\", file=sys.stderr)\n            return 0",
+      "why": "ポートが使われていて起動できないのに成功として終わっても通るなら、起動の失敗が黙って見過ごされる (#16)。"
+    },
+    {
+      "id": "history-not-sent-to-ai",
+      "file": "console/chat/__init__.py",
+      "find": "responder.reply([*history, {\"role\": \"user\", \"content\": text}])",
+      "replace": "responder.reply([*history[:0], {\"role\": \"user\", \"content\": text}])",
+      "why": "それまでのやり取りを AI に渡さなくなる (動かなくなるカウンター: 往復の数が 1 のまま)。これが通るなら、前のやり取りを踏まえた応答 (S5) を誰も確かめていない。"
+    },
+    {
+      "id": "conversation-not-continued",
+      "file": "console/static/index.html",
+      "find": "currentConversationId = conversation_id;",
+      "replace": "currentConversationId = null;",
+      "why": "画面が送るたびに新しい会話を作り、続けて話しても同じ会話にならない。API は正しく、画面の JS だけが壊れる。これが通るなら、画面の操作で 2 往復する検証が無い。"
     }
   ],
   "_aiming_is_not_landing": [
