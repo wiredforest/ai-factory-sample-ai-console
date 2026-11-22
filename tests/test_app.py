@@ -105,3 +105,10 @@ def test_port_in_use_exits_2_with_one_line_and_leaves_the_first_running(start_ap
     assert health.status == 200
     assert health.body == b"ok"
     assert first.get("/build-id").body == b"first"
+
+
+def test_port_in_use_with_an_unopenable_record_still_exits_2_with_one_line(start_app, tmp_path):
+    first = start_app()
+    result = run_until_exit(port=first.port, CONSOLE_DB_PATH=str(tmp_path / "missing" / "console.sqlite3"))
+    assert result.returncode == 2
+    assert result.stderr.splitlines() == [f"error: ポート {first.port} はすでに使われています"]

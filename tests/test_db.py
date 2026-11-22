@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -147,3 +148,29 @@ def test_has_conversation(db):
     conversation = db.create_conversation()
     assert db.has_conversation(conversation)
     assert not db.has_conversation(conversation + 1)
+
+
+def test_check_is_true_and_leaves_the_record_unchanged(db, db_path):
+    conversation = db.add_exchange(None, "りんごの話", "fake reply #1: りんごの話")
+    before = (db.list_conversations(), db.messages(conversation))
+    assert console.db.check(str(db_path))
+    assert (db.list_conversations(), db.messages(conversation)) == before
+
+
+def test_check_is_false_without_creating_a_missing_directory_or_file(tmp_path):
+    for path in (tmp_path / "missing" / "console.sqlite3", tmp_path / "absent.sqlite3"):
+        assert not console.db.check(str(path))
+        assert not path.exists()
+    assert not (tmp_path / "missing").exists()
+
+
+def test_check_waits_for_another_writer_instead_of_failing(db, db_path):
+    other = sqlite3.connect(db_path, check_same_thread=False)
+    other.execute("INSERT INTO conversations (created_at, updated_at) VALUES ('a', 'a')")
+    release = threading.Timer(0.3, other.commit)
+    release.start()
+    try:
+        assert console.db.check(str(db_path))
+    finally:
+        release.join()
+        other.close()
