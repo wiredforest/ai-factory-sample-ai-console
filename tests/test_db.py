@@ -118,3 +118,32 @@ def test_only_the_database_file_and_its_sqlite_companions_are_written(tmp_path, 
     allowed = {db_path.name} | {db_path.name + suffix for suffix in ("-wal", "-shm", "-journal")}
     assert {p.name for p in tmp_path.iterdir()} <= allowed
 
+
+
+def test_exchange_without_a_conversation_starts_one_with_both_messages_in_order(db):
+    conversation = db.add_exchange(None, "りんごの話", "fake reply #1: りんごの話")
+    assert [c.id for c in db.list_conversations()] == [conversation]
+    assert [(m.role, m.content) for m in db.messages(conversation)] == [
+        ("user", "りんごの話"),
+        ("assistant", "fake reply #1: りんごの話"),
+    ]
+
+
+def test_exchange_joins_an_existing_conversation_and_moves_it_up(db):
+    a = db.add_exchange(None, "りんごの話", "fake reply #1: りんごの話")
+    b = db.add_exchange(None, "みかんの話", "fake reply #1: みかんの話")
+    assert db.add_exchange(a, "続きです", "fake reply #2: 続きです") == a
+    assert [c.id for c in db.list_conversations()] == [a, b]
+    assert len(db.messages(a)) == 4
+
+
+def test_exchange_to_a_missing_conversation_is_refused_and_adds_nothing(db):
+    with pytest.raises(sqlite3.IntegrityError):
+        db.add_exchange(999, "りんごの話", "fake reply #1: りんごの話")
+    assert db.list_conversations() == []
+
+
+def test_has_conversation(db):
+    conversation = db.create_conversation()
+    assert db.has_conversation(conversation)
+    assert not db.has_conversation(conversation + 1)

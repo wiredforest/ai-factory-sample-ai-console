@@ -1,4 +1,5 @@
 import http.client
+import json
 import os
 import queue
 import socket
@@ -59,9 +60,16 @@ class RunningApp:
 
     def get(self, path: str) -> Response:
         """リダイレクトを辿らずに GET する。"""
+        return self.request("GET", path)
+
+    def post_json(self, path: str, value: object) -> Response:
+        body = json.dumps(value, ensure_ascii=False).encode("utf-8")
+        return self.request("POST", path, body, {"Content-Type": "application/json"})
+
+    def request(self, method: str, path: str, body: bytes | None = None, headers: dict[str, str] | None = None) -> Response:
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         try:
-            conn.request("GET", path)
+            conn.request(method, path, body, headers or {})
             r = conn.getresponse()
             return Response(status=r.status, headers=r.headers, body=r.read())
         finally:
