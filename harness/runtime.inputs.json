@@ -4,11 +4,15 @@
   "holdout": ".factory/holdout/HOLDOUT.md",
   "driver": "http",
   "http": {
-    "start": "",
+    "start": "python app.py --port {port}",
     "health_path": "/health",
-    "health_contains": "",
+    "health_contains": "ok",
     "boot_timeout_s": 45,
-    "env": {}
+    "env": {
+      "CONSOLE_DB_PATH": "{state}/console.sqlite3",
+      "CONSOLE_LLM": "fake"
+    },
+    "identity_path": "/build-id"
   },
   "cli": {
     "invoke": "",
@@ -32,5 +36,6 @@
     "fresh_database": true,
     "assertion_evidence_required": true,
     "cleanup": "所有するプロセスと環境の後始末は、プロデューサーが検証しなければならない"
-  }
+  },
+  "runtime_instructions": "harness/RUNTIME.md"
 }
