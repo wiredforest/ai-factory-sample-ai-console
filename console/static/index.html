@@ -24,6 +24,16 @@
   #conversations li { padding: 0.5rem 0; border-bottom: 1px solid #eee; }
   #conversations .title { display: block; overflow-wrap: anywhere; }
   #conversations time { font-size: 0.8rem; color: #777; }
+  #chat { display: flex; flex-direction: column; overflow: hidden; }
+  #messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0.75rem; padding-bottom: 0.75rem; }
+  .bubble { max-width: 75%; padding: 0.5rem 0.75rem; border-radius: 0.75rem; }
+  .bubble .speaker { display: block; font-size: 0.75rem; font-weight: bold; margin-bottom: 0.25rem; }
+  .bubble .text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .bubble.user { align-self: flex-end; background: #d7ecff; }
+  .bubble.assistant { align-self: flex-start; background: #fff; border: 1px solid #ddd; }
+  #composer { display: flex; gap: 0.5rem; }
+  #composer textarea { flex: 1; resize: vertical; min-height: 3rem; font: inherit; padding: 0.5rem; }
+  #composer button { font: inherit; padding: 0 1rem; }
 </style>
 </head>
 <body>
@@ -34,6 +44,11 @@
   </section>
   <section id="chat">
     <h2>会話</h2>
+    <div id="messages"></div>
+    <form id="composer">
+      <textarea name="text" rows="2" placeholder="メッセージを入力 (Enter で送信、Shift+Enter で改行)" aria-label="メッセージ"></textarea>
+      <button type="submit">送信</button>
+    </form>
   </section>
   <section id="status">
     <h2>サーバの状態</h2>
@@ -75,6 +90,65 @@
   // 会話の送受信は、送信が成功するたびに document へ conversation-updated を送る。
   document.addEventListener("conversation-updated", loadHistory);
   loadHistory();
+
+  const chatMessages = document.getElementById("messages");
+  const composer = document.getElementById("composer");
+  const composerText = composer.elements.text;
+  const sendButton = composer.querySelector("button");
+  const SPEAKERS = { user: "あなた", assistant: "AI" };
+  // 今の会話の id。まだ 1 通も送っていない新しい会話では null。
+  let currentConversationId = null;
+
+  function addBubble(role, text) {
+    const bubble = document.createElement("div");
+    bubble.className = `bubble ${role}`;
+    const speaker = document.createElement("span");
+    speaker.className = "speaker";
+    speaker.textContent = SPEAKERS[role];
+    const body = document.createElement("p");
+    body.className = "text";
+    body.textContent = text;
+    bubble.append(speaker, body);
+    chatMessages.append(bubble);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  }
+
+  async function sendMessage() {
+    const text = composerText.value;
+    if (sendButton.disabled || !text.trim()) return;
+    sendButton.disabled = true;
+    composerText.value = "";
+    addBubble("user", text);
+    try {
+      const response = await fetch("/api/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversation_id: currentConversationId, text }),
+      });
+      // 送れなかったときの表示は S4 (#12) で足す。
+      if (!response.ok) throw new Error(`POST /api/messages: ${response.status}`);
+      const { conversation_id, messages } = await response.json();
+      // 自分の吹き出しはもう出ているので、AI の応答だけを足す。
+      addBubble("assistant", messages[messages.length - 1].text);
+      currentConversationId = conversation_id;
+      document.dispatchEvent(new CustomEvent("conversation-updated", { detail: { conversationId: conversation_id } }));
+    } finally {
+      sendButton.disabled = false;
+      composerText.focus();
+    }
+  }
+
+  composer.addEventListener("submit", (event) => {
+    event.preventDefault();
+    sendMessage();
+  });
+  composerText.addEventListener("keydown", (event) => {
+    // 変換中の Enter は確定に使うので送らない。
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      sendMessage();
+    }
+  });
 </script>
 </body>
 </html>

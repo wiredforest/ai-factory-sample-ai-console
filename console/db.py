@@ -72,13 +72,37 @@ class Database:
         return cur.lastrowid
 
     def add_message(self, conversation_id: int, role: Role, content: str) -> None:
-        at = now()
         with self._lock, self._conn:
-            self._conn.execute(
-                "INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                (conversation_id, role, content, at),
-            )
-            self._conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (at, conversation_id))
+            self._insert_message(conversation_id, role, content)
+
+    def add_exchange(self, conversation_id: int | None, user: str, assistant: str) -> int:
+        """user の発言と assistant の応答をこの順に 1 つのトランザクションで記録し、会話の id を返す。
+
+        conversation_id が None なら、同じトランザクションで新しい会話を作る。途中で失敗したら何も残らない。
+        """
+        with self._lock, self._conn:
+            if conversation_id is None:
+                at = now()
+                conversation_id = self._conn.execute(
+                    "INSERT INTO conversations (created_at, updated_at) VALUES (?, ?)", (at, at)
+                ).lastrowid
+            self._insert_message(conversation_id, "user", user)
+            self._insert_message(conversation_id, "assistant", assistant)
+        return conversation_id
+
+    def _insert_message(self, conversation_id: int, role: Role, content: str) -> None:
+        # ロックを持ち、トランザクションの中で呼ぶ。
+        at = now()
+        self._conn.execute(
+            "INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+            (conversation_id, role, content, at),
+        )
+        self._conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (at, conversation_id))
+
+    def has_conversation(self, conversation_id: int) -> bool:
+        with self._lock:
+            row = self._conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+        return row is not None
 
     def list_conversations(self) -> list[ConversationSummary]:
         with self._lock:
