@@ -18,6 +18,7 @@ HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 HERE = Path(__file__).resolve().parent
 INDEX_HTML = (HERE / "static" / "index.html").read_bytes()
+CONVERSATION_PREFIX = "/api/conversations/"
 
 
 def build_id() -> str:
@@ -60,11 +61,23 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply_db_unavailable()
             else:
                 self.reply_json(history.list_conversations(self.server.db))
+        elif path.startswith(CONVERSATION_PREFIX):
+            self.get_conversation(path.removeprefix(CONVERSATION_PREFIX))
         elif path == "/api/status":
             db_path = None if self.server.db is None else self.server.db_path
             self.reply_json(status.check(self.server.server_address[1], db_path, self.server.responder))
         else:
             self.send_error(404)
+
+    def get_conversation(self, raw_id: str) -> None:
+        if self.server.db is None:
+            self.reply_db_unavailable()
+            return
+        found = history.conversation(self.server.db, raw_id)
+        if found is None:
+            self.reply_json({"error": "conversation_not_found"}, 404)
+        else:
+            self.reply_json(found)
 
     def do_POST(self) -> None:
         path = urlsplit(self.path).path

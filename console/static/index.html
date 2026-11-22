@@ -21,7 +21,10 @@
   #status { border-left: 1px solid #ddd; background: #fff; }
   .empty { color: #777; }
   #conversations { list-style: none; margin: 0; padding: 0; }
-  #conversations li { padding: 0.5rem 0; border-bottom: 1px solid #eee; }
+  #conversations li { border-bottom: 1px solid #eee; }
+  #conversations button { display: block; width: 100%; padding: 0.5rem; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+  #conversations button:hover { background: #f2f2ef; }
+  #conversations li[aria-current="true"] button { background: #e3effa; }
   #conversations .title { display: block; overflow-wrap: anywhere; }
   #conversations time { font-size: 0.8rem; color: #777; }
   #chat { display: flex; flex-direction: column; overflow: hidden; }
@@ -65,6 +68,9 @@
   const historyList = document.getElementById("conversations");
   const historyEmpty = document.querySelector("#history .empty");
   let historyRequest = 0;
+  let openRequest = 0;
+  // 今の会話の id。一覧を読み直しても、その項目に aria-current を付け直す。
+  let currentHistoryId = null;
 
   function localTime(iso) {
     const at = new Date(iso);
@@ -82,21 +88,53 @@
     historyList.replaceChildren(...conversations.map((conversation) => {
       const item = document.createElement("li");
       item.dataset.conversationId = conversation.id;
+      const open = document.createElement("button");
+      open.type = "button";
+      open.addEventListener("click", () => openConversation(conversation.id));
       const title = document.createElement("span");
       title.className = "title";
       title.textContent = conversation.title;
       const time = document.createElement("time");
       time.dateTime = conversation.updated_at;
       time.textContent = localTime(conversation.updated_at);
-      item.append(title, time);
+      open.append(title, time);
+      item.append(open);
       return item;
     }));
+    markCurrent();
     // 空の表示は、一覧を読み終えてから出す。先に出すと、会話があるのに一瞬「まだありません」と見える。
     historyEmpty.hidden = conversations.length > 0;
   }
 
+  function markCurrent() {
+    for (const item of historyList.children) {
+      if (Number(item.dataset.conversationId) === currentHistoryId) {
+        item.setAttribute("aria-current", "true");
+      } else {
+        item.removeAttribute("aria-current");
+      }
+    }
+  }
+
+  async function openConversation(conversationId) {
+    // 続けて選んだら、最後に選んだ会話だけを開く。
+    const request = ++openRequest;
+    const response = await fetch(`/api/conversations/${conversationId}`);
+    if (!response.ok) throw new Error(`GET /api/conversations/${conversationId}: ${response.status}`);
+    const { id, messages } = await response.json();
+    if (request !== openRequest) return;
+    currentHistoryId = id;
+    markCurrent();
+    // 会話の送受信は conversation-opened を受けて、会話の領域をこのメッセージで置き換え、今の会話にする。
+    document.dispatchEvent(new CustomEvent("conversation-opened", { detail: { conversationId: id, messages } }));
+  }
+
   // 会話の送受信は、送信が成功するたびに document へ conversation-updated を送る。
-  document.addEventListener("conversation-updated", loadHistory);
+  // shown は、その会話を今も会話の領域に出しているか (送っている間に別の会話を開いていないか)。
+  document.addEventListener("conversation-updated", (event) => {
+    if (event.detail.shown) currentHistoryId = event.detail.conversationId;
+    loadHistory();
+  });
   loadHistory();
 
   const chatMessages = document.getElementById("messages");
@@ -106,6 +144,8 @@
   const SPEAKERS = { user: "あなた", assistant: "AI" };
   // 今の会話の id。まだ 1 通も送っていない新しい会話では null。
   let currentConversationId = null;
+  // 会話の領域に出している会話が変わるたびに増やす。送信中に別の会話を開いたら、前の会話の応答をここに出さない。
+  let chatView = 0;
 
   function addBubble(role, text) {
     const bubble = document.createElement("div");
@@ -127,6 +167,7 @@
     sendButton.disabled = true;
     composerText.value = "";
     addBubble("user", text);
+    const view = chatView;
     try {
       const response = await fetch("/api/messages", {
         method: "POST",
@@ -136,15 +177,26 @@
       // 送れなかったときの表示は S4 (#12) で足す。
       if (!response.ok) throw new Error(`POST /api/messages: ${response.status}`);
       const { conversation_id, messages } = await response.json();
-      // 自分の吹き出しはもう出ているので、AI の応答だけを足す。
-      addBubble("assistant", messages[messages.length - 1].text);
-      currentConversationId = conversation_id;
-      document.dispatchEvent(new CustomEvent("conversation-updated", { detail: { conversationId: conversation_id } }));
+      const shown = view === chatView;
+      if (shown) {
+        // 自分の吹き出しはもう出ているので、AI の応答だけを足す。
+        addBubble("assistant", messages[messages.length - 1].text);
+        currentConversationId = conversation_id;
+      }
+      document.dispatchEvent(new CustomEvent("conversation-updated", { detail: { conversationId: conversation_id, shown } }));
     } finally {
       sendButton.disabled = false;
       composerText.focus();
     }
   }
+
+  document.addEventListener("conversation-opened", (event) => {
+    const { conversationId, messages } = event.detail;
+    chatView++;
+    chatMessages.replaceChildren();
+    for (const message of messages) addBubble(message.role, message.text);
+    currentConversationId = conversationId;
+  });
 
   composer.addEventListener("submit", (event) => {
     event.preventDefault();
