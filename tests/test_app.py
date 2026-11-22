@@ -71,11 +71,11 @@ def test_listens_on_loopback_only(start_app):
     assert app.startup_line == f"listening on http://127.0.0.1:{app.port}"
 
 
-def run_until_exit(**env: str | None) -> subprocess.CompletedProcess[str]:
+def run_until_exit(port: int | None = None, **env: str | None) -> subprocess.CompletedProcess[str]:
     merged = {**os.environ, **env}
     environ = {k: v for k, v in merged.items() if v is not None}
     return subprocess.run(
-        app_argv(free_port()), check=False, cwd=ROOT, env=environ,
+        app_argv(free_port() if port is None else port), check=False, cwd=ROOT, env=environ,
         capture_output=True, text=True, encoding="utf-8", timeout=15,
     )
 
@@ -90,3 +90,18 @@ def test_unknown_llm_exits_2():
     result = run_until_exit(CONSOLE_LLM="bogus")
     assert result.returncode == 2
     assert "CONSOLE_LLM" in result.stderr
+
+
+def test_port_in_use_exits_2_with_one_line_and_leaves_the_first_running(start_app):
+    first = start_app(FACTORY_RUNTIME_CANDIDATE="first")
+    result = run_until_exit(port=first.port, FACTORY_RUNTIME_CANDIDATE="second")
+    assert result.returncode == 2
+    lines = [line for line in result.stderr.splitlines() if line.strip()]
+    assert lines == [f"error: ポート {first.port} はすでに使われています"]
+    assert "Traceback" not in result.stderr
+    assert "OSError" not in result.stderr
+    assert "listening on" not in result.stdout
+    health = first.get("/health")
+    assert health.status == 200
+    assert health.body == b"ok"
+    assert first.get("/build-id").body == b"first"
