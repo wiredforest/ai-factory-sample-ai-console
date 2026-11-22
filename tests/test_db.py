@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+import console.db
 from console.db import Database
 
 
@@ -48,6 +49,13 @@ def test_list_is_newest_update_first(db):
     assert [c.id for c in db.list_conversations()] == [b, a]
     db.add_message(a, "assistant", "fake reply #1: りんごの話")
     assert [c.id for c in db.list_conversations()] == [a, b]
+
+
+def test_conversations_updated_at_once_list_the_newer_first(db, monkeypatch):
+    monkeypatch.setattr(console.db, "now", lambda: "2026-01-01T00:00:00.000000+00:00")
+    a = db.create_conversation()
+    b = db.create_conversation()
+    assert [c.id for c in db.list_conversations()] == [b, a]
 
 
 def test_list_carries_id_update_time_and_first_user_message(db):

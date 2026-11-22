@@ -4,11 +4,11 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal, Self
+from typing import Literal, Self, get_args
 
 Role = Literal["user", "assistant"]
 
-SCHEMA = """
+SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS conversations (
     id INTEGER PRIMARY KEY,
     created_at TEXT NOT NULL,
@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS conversations (
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY,
     conversation_id INTEGER NOT NULL REFERENCES conversations (id),
-    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    role TEXT NOT NULL CHECK (role IN ({", ".join(f"'{role}'" for role in get_args(Role))})),
     content TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
