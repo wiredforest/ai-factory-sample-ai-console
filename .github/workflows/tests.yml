@@ -5,27 +5,17 @@ on:
   push:
     branches: [main]
 
-# リポジトリの Actions 設定は local_only で、外部 action (`uses:`) は起動前に拒否される。
-# checkout・uv・Python はすべて run: で用意する。
+# リポジトリの Actions 設定は selected で、actions/checkout・actions/setup-python・
+# astral-sh/setup-uv だけを許可している。ほかの外部 action を足すときは設定も変えること。
 jobs:
   tests:
     runs-on: ubuntu-latest
     env:
       UV_LOCKED: "1"
-      UV_PYTHON: "3.14"
-      GITHUB_TOKEN: ${{ github.token }}
     steps:
-      - name: checkout
-        run: |
-          git init -q .
-          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
-          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
-          git -c http.extraheader="$auth" fetch -q --depth 1 origin "$GITHUB_SHA"
-          git checkout -q --detach FETCH_HEAD
-      - name: install uv
-        run: |
-          curl -LsSf https://releases.astral.sh/github/uv/releases/download/0.13.9/uv-installer.sh | sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: install python
-        run: uv python install "$UV_PYTHON"
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.4.0
+        with:
+          version: "0.13.9"
+          python-version: "3.14"
       - run: uv run python harness/ci.py
