@@ -51,8 +51,12 @@ class FakeDown:
 class Anthropic:
     def reply(self, messages: Sequence[Message]) -> str:
         body = {"model": MODEL, "max_tokens": MAX_TOKENS, "messages": list(messages)}
-        result = call("POST", "/messages", REPLY_TIMEOUT_S, body)
-        return "".join(block["text"] for block in result["content"] if block["type"] == "text")
+        answer = call("POST", "/messages", REPLY_TIMEOUT_S, body)
+        try:
+            content = json.loads(answer)["content"]
+            return "".join(block["text"] for block in content if block["type"] == "text")
+        except (ValueError, KeyError, TypeError) as e:
+            raise Unreachable(f"AI に繋がりません (応答の形が想定外です: {type(e).__name__})") from e
 
     def reachable(self) -> bool:
         try:
@@ -62,9 +66,10 @@ class Anthropic:
         return True
 
 
-def call(method: str, path: str, timeout: float, body: object = None) -> dict:
+def call(method: str, path: str, timeout: float, body: object = None) -> bytes:
+    """2xx の応答の本文を返す。繋がらなければ Unreachable を送出する。"""
     # 鍵は呼ぶたびに環境変数から読む。例外の文言には鍵を入れない。
-    key = os.environ.get("ANTHROPIC_API_KEY")
+    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if not key:
         raise Unreachable("AI に繋がりません (ANTHROPIC_API_KEY が設定されていません)")
     request = urllib.request.Request(
@@ -75,7 +80,11 @@ def call(method: str, path: str, timeout: float, body: object = None) -> dict:
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.load(response)
+            return response.read()
+    except ValueError:
+        # http.client はヘッダに使えない文字 (改行、latin-1 の外の文字) を、鍵の全文入りの ValueError で拒む。
+        # 鍵が traceback に出ないよう、元の例外はつながない。
+        raise Unreachable("AI に繋がりません (ANTHROPIC_API_KEY にヘッダに使えない文字があります)") from None
     except (OSError, http.client.HTTPException) as e:
         # urlopen は 2xx 以外を HTTPError (OSError の仲間) として送出する。
         raise Unreachable(f"AI に繋がりません ({type(e).__name__}: {e})") from e
