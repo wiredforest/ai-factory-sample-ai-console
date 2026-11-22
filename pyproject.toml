@@ -1,0 +1,19 @@
+[project]
+name = "personal-ai-console"
+version = "0.1.0"
+description = "自分専用の AI 会話コンソール"
+requires-python = ">=3.14"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2",
+    "ruff>=0.17",
+]
+
+[tool.ruff]
+# 保護対象のパス。人だけが変更するため、ここでは検査の対象から外す。
+extend-exclude = ["harness", "factory", ".factory"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
