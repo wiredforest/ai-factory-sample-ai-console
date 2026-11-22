@@ -25,6 +25,9 @@
   #conversations .title { display: block; overflow-wrap: anywhere; }
   #conversations time { font-size: 0.8rem; color: #777; }
   #chat { display: flex; flex-direction: column; overflow: hidden; }
+  #chat header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.75rem; }
+  #chat header h2 { margin: 0; }
+  #new-conversation { font: inherit; }
   #messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0.75rem; padding-bottom: 0.75rem; }
   .bubble { max-width: 75%; padding: 0.5rem 0.75rem; border-radius: 0.75rem; }
   .bubble .speaker { display: block; font-size: 0.75rem; font-weight: bold; margin-bottom: 0.25rem; }
@@ -48,7 +51,10 @@
     <ul id="conversations"></ul>
   </section>
   <section id="chat">
-    <h2>会話</h2>
+    <header>
+      <h2>会話</h2>
+      <button type="button" id="new-conversation">新しい会話</button>
+    </header>
     <div id="messages"></div>
     <form id="composer">
       <textarea name="text" rows="2" placeholder="メッセージを入力 (Enter で送信、Shift+Enter で改行)" aria-label="メッセージ"></textarea>
@@ -97,15 +103,22 @@
 
   // 会話の送受信は、送信が成功するたびに document へ conversation-updated を送る。
   document.addEventListener("conversation-updated", loadHistory);
+  // 新しい会話はまだ記録に無いので、一覧のどの会話も今の会話ではなくなる。
+  document.addEventListener("conversation-new", () => {
+    for (const item of historyList.querySelectorAll("[aria-current]")) item.removeAttribute("aria-current");
+  });
   loadHistory();
 
   const chatMessages = document.getElementById("messages");
   const composer = document.getElementById("composer");
   const composerText = composer.elements.text;
   const sendButton = composer.querySelector("button");
+  const newConversationButton = document.getElementById("new-conversation");
   const SPEAKERS = { user: "あなた", assistant: "AI" };
   // 今の会話の id。まだ 1 通も送っていない新しい会話では null。
   let currentConversationId = null;
+  // 会話の領域に出している会話が変わるたびに増やす。送信中に新しい会話にしたら、前の会話の応答をここに出さない。
+  let chatView = 0;
 
   function addBubble(role, text) {
     const bubble = document.createElement("div");
@@ -124,6 +137,7 @@
   async function sendMessage() {
     const text = composerText.value;
     if (sendButton.disabled || !text.trim()) return;
+    const view = chatView;
     sendButton.disabled = true;
     composerText.value = "";
     addBubble("user", text);
@@ -136,15 +150,27 @@
       // 送れなかったときの表示は S4 (#12) で足す。
       if (!response.ok) throw new Error(`POST /api/messages: ${response.status}`);
       const { conversation_id, messages } = await response.json();
-      // 自分の吹き出しはもう出ているので、AI の応答だけを足す。
-      addBubble("assistant", messages[messages.length - 1].text);
-      currentConversationId = conversation_id;
+      if (view === chatView) {
+        // 自分の吹き出しはもう出ているので、AI の応答だけを足す。
+        addBubble("assistant", messages[messages.length - 1].text);
+        currentConversationId = conversation_id;
+      }
       document.dispatchEvent(new CustomEvent("conversation-updated", { detail: { conversationId: conversation_id } }));
     } finally {
       sendButton.disabled = false;
       composerText.focus();
     }
   }
+
+  // 押しただけでは会話を作らない。次の送信が conversation_id: null で送られ、成功したときに記録される。
+  newConversationButton.addEventListener("click", () => {
+    chatView++;
+    chatMessages.replaceChildren();
+    composerText.value = "";
+    currentConversationId = null;
+    document.dispatchEvent(new CustomEvent("conversation-new"));
+    composerText.focus();
+  });
 
   composer.addEventListener("submit", (event) => {
     event.preventDefault();
