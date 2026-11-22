@@ -37,7 +37,7 @@
   #status-items { list-style: none; margin: 0 0 0.75rem; padding: 0; }
   #status-items li { display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid #eee; }
   .state.ok { color: #1a7f37; }
-  .state.ng, .status-error { color: #c62828; font-weight: bold; }
+  .state.ng, .status-error, .history-error { color: #c62828; font-weight: bold; }
   #recheck { font: inherit; }
 </style>
 </head>
@@ -45,6 +45,7 @@
   <section id="history">
     <h2>履歴</h2>
     <p class="empty" hidden>会話がまだありません</p>
+    <p class="history-error" hidden>会話の履歴を読めませんでした</p>
     <ul id="conversations"></ul>
   </section>
   <section id="chat">
@@ -64,6 +65,7 @@
 <script>
   const historyList = document.getElementById("conversations");
   const historyEmpty = document.querySelector("#history .empty");
+  const historyError = document.querySelector("#history .history-error");
   let historyRequest = 0;
 
   function localTime(iso) {
@@ -75,10 +77,21 @@
   async function loadHistory() {
     // 読み直しが重なったら、最後に始めたものの結果だけを出す。
     const request = ++historyRequest;
-    const response = await fetch("/api/conversations");
-    if (!response.ok) throw new Error(`GET /api/conversations: ${response.status}`);
-    const { conversations } = await response.json();
+    let conversations;
+    try {
+      const response = await fetch("/api/conversations");
+      if (!response.ok) throw new Error(`GET /api/conversations: ${response.status}`);
+      ({ conversations } = await response.json());
+    } catch (error) {
+      if (request !== historyRequest) return;
+      // 読めなかったのに「まだありません」と出すと、会話が無いのと見分けられない。前の一覧も残さない。
+      historyList.replaceChildren();
+      historyEmpty.hidden = true;
+      historyError.hidden = false;
+      throw error;
+    }
     if (request !== historyRequest) return;
+    historyError.hidden = true;
     historyList.replaceChildren(...conversations.map((conversation) => {
       const item = document.createElement("li");
       item.dataset.conversationId = conversation.id;
