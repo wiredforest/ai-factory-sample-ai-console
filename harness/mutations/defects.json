@@ -38,14 +38,72 @@
   ],
   "_copy": "使い捨てのビルドごとにコピーするもの。小さく保つ。これは欠陥ごとに 1 回実行される。",
   "copy": [
-    "app",
+    "app.py",
+    "console",
     "tests",
     "harness",
     ".factory",
-    "pyproject.toml"
+    "pyproject.toml",
+    "uv.lock"
   ],
-  "_scaffold": "SCAFFOLD_EXAMPLE_DELETE_THIS_LINE_WHEN_YOU_WRITE_YOUR_OWN",
-  "defects": [],
+  "defects": [
+    {
+      "id": "health-says-not-ok",
+      "file": "console/server.py",
+      "find": "self.reply(b\"ok\", ",
+      "replace": "self.reply(b\"ng\", ",
+      "why": "工場がアプリの生存を確かめる /health の本文が契約 (ok) から外れても通るなら、ヘルスチェックの契約を誰も守っていない。"
+    },
+    {
+      "id": "build-id-ignores-candidate",
+      "file": "console/server.py",
+      "find": "return candidate",
+      "replace": "return \"unknown\"",
+      "why": "/build-id が候補の識別値を返さなくても通るなら、工場は自分が起動したものではないプロセスを検証しうる。"
+    },
+    {
+      "id": "listens-on-all-interfaces",
+      "file": "console/server.py",
+      "find": "HOST = \"127.0.0.1\"",
+      "replace": "HOST = \"0.0.0.0\"",
+      "why": "不変条件 1 (127.0.0.1 でだけ待ち受ける) が破れても通るなら、認証の無いアプリが外から繋がる状態で出荷されうる。"
+    },
+    {
+      "id": "config-error-exits-zero",
+      "file": "console/server.py",
+      "find": "return 2",
+      "replace": "return 0",
+      "why": "設定の誤りで起動できないのに成功として終わっても通るなら、起動の失敗が黙って見過ごされる。"
+    },
+    {
+      "id": "fake-down-rejected",
+      "file": "console/config.py",
+      "find": "LLM_CHOICES = (\"fake\", \"fake-down\", \"anthropic\")",
+      "replace": "LLM_CHOICES = (\"fake\", \"anthropic\")",
+      "why": "工場の検証で AI に繋がらない状態を起こす fake-down が使えなくなっても通るなら、ジャーニー 4 の検証が成り立たなくなる。"
+    },
+    {
+      "id": "default-llm-flipped",
+      "file": "console/config.py",
+      "find": "DEFAULT_LLM = \"anthropic\"",
+      "replace": "DEFAULT_LLM = \"fake\"",
+      "why": "未設定のときに偽の応答役が選ばれても通るなら、DEN さんが手元で本物の AI と話しているつもりで偽の応答を受け取りうる。"
+    },
+    {
+      "id": "empty-history-message-hidden",
+      "file": "console/static/index.html",
+      "find": "<p class=\"empty\">",
+      "replace": "<p class=\"empty\" hidden>",
+      "why": "データ (文言) は HTML に残るが画面には出ない。これが通るなら、画面に見えることを確かめる段が無く、HTML の文字列だけで合格している。"
+    },
+    {
+      "id": "empty-history-message-invisible",
+      "file": "console/static/index.html",
+      "find": ".empty { color: #777; }",
+      "replace": ".empty { color: #fff; }",
+      "why": "履歴の白い背景に白い文字で、要素も文言もあるのに読めない。これが通るなら、見た目は人のレビューにしか守られていない (MISSION の責任範囲外どおりかを確かめる)。"
+    }
+  ],
   "_aiming_is_not_landing": [
     "どの段が各欠陥を捕まえたかを読み、「段 X を狙った」は仮説として扱う。",
     "",
