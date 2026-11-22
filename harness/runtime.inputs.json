@@ -1,0 +1,36 @@
+{
+  "description": "共有のランタイム検証に使う、プロジェクトのシナリオと環境のデータ。プロデューサーの入力フラグは、最終的な統合での対応付けを要する。このファイルは何も実行しない。",
+  "scenarios": "harness/END-TO-END.md",
+  "holdout": ".factory/holdout/HOLDOUT.md",
+  "driver": "http",
+  "http": {
+    "start": "",
+    "health_path": "/health",
+    "health_contains": "",
+    "boot_timeout_s": 45,
+    "env": {}
+  },
+  "cli": {
+    "invoke": "",
+    "smoke_args": "--version",
+    "smoke_contains": ""
+  },
+  "library": {
+    "import_check": ""
+  },
+  "browser": {
+    "install_check": "",
+    "install_hint": ""
+  },
+  "requirements": {
+    "fresh_environment_per": [
+      "runtime",
+      "holdout",
+      "retry",
+      "mutation"
+    ],
+    "fresh_database": true,
+    "assertion_evidence_required": true,
+    "cleanup": "所有するプロセスと環境の後始末は、プロデューサーが検証しなければならない"
+  }
+}
