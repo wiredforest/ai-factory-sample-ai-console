@@ -5,6 +5,7 @@ import socket
 import subprocess
 import sys
 import threading
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +22,12 @@ def console_env(monkeypatch, tmp_path):
     monkeypatch.delenv("FACTORY_RUNTIME_CANDIDATE", raising=False)
     monkeypatch.setenv("CONSOLE_LLM", "fake")
     monkeypatch.setenv("CONSOLE_DB_PATH", str(tmp_path / "console.sqlite3"))
+    monkeypatch.setattr(urllib.request, "urlopen", refuse_network)
+
+
+def refuse_network(*args, **kwargs):
+    # pytest.fail は BaseException なので、呼ぶ側の except OSError や except Exception に握りつぶされない。
+    pytest.fail("テストはネットワークに出ない。urllib.request.urlopen は自分で差し替えた偽物を使うこと")
 
 
 def free_port() -> int:
@@ -44,6 +51,11 @@ class Response:
 class RunningApp:
     port: int
     startup_line: str
+    proc: subprocess.Popen
+
+    def stop(self) -> None:
+        self.proc.terminate()
+        self.proc.wait(timeout=10)
 
     def get(self, path: str) -> Response:
         """リダイレクトを辿らずに GET する。"""
@@ -76,7 +88,7 @@ def start_app():
             pytest.fail(f"{BOOT_TIMEOUT_S} 秒たっても起動ログが出ない")
         if not line:
             pytest.fail(f"起動に失敗した (終了コード {proc.wait()}): {proc.stderr.read()}")
-        return RunningApp(port=port, startup_line=line.rstrip("\n"))
+        return RunningApp(port=port, startup_line=line.rstrip("\n"), proc=proc)
 
     yield start
     for proc in procs:

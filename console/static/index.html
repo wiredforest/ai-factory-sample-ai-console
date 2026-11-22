@@ -20,12 +20,17 @@
   #history { border-right: 1px solid #ddd; background: #fff; }
   #status { border-left: 1px solid #ddd; background: #fff; }
   .empty { color: #777; }
+  #conversations { list-style: none; margin: 0; padding: 0; }
+  #conversations li { padding: 0.5rem 0; border-bottom: 1px solid #eee; }
+  #conversations .title { display: block; overflow-wrap: anywhere; }
+  #conversations time { font-size: 0.8rem; color: #777; }
 </style>
 </head>
 <body>
   <section id="history">
     <h2>履歴</h2>
-    <p class="empty">会話がまだありません</p>
+    <p class="empty" hidden>会話がまだありません</p>
+    <ul id="conversations"></ul>
   </section>
   <section id="chat">
     <h2>会話</h2>
@@ -33,5 +38,43 @@
   <section id="status">
     <h2>サーバの状態</h2>
   </section>
+<script>
+  const historyList = document.getElementById("conversations");
+  const historyEmpty = document.querySelector("#history .empty");
+  let historyRequest = 0;
+
+  function localTime(iso) {
+    const at = new Date(iso);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+  }
+
+  async function loadHistory() {
+    // 読み直しが重なったら、最後に始めたものの結果だけを出す。
+    const request = ++historyRequest;
+    const response = await fetch("/api/conversations");
+    if (!response.ok) throw new Error(`GET /api/conversations: ${response.status}`);
+    const { conversations } = await response.json();
+    if (request !== historyRequest) return;
+    historyList.replaceChildren(...conversations.map((conversation) => {
+      const item = document.createElement("li");
+      item.dataset.conversationId = conversation.id;
+      const title = document.createElement("span");
+      title.className = "title";
+      title.textContent = conversation.title;
+      const time = document.createElement("time");
+      time.dateTime = conversation.updated_at;
+      time.textContent = localTime(conversation.updated_at);
+      item.append(title, time);
+      return item;
+    }));
+    // 空の表示は、一覧を読み終えてから出す。先に出すと、会話があるのに一瞬「まだありません」と見える。
+    historyEmpty.hidden = conversations.length > 0;
+  }
+
+  // 会話の送受信は、送信が成功するたびに document へ conversation-updated を送る。
+  document.addEventListener("conversation-updated", loadHistory);
+  loadHistory();
+</script>
 </body>
 </html>
