@@ -61,7 +61,8 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.reply_json(history.list_conversations(self.server.db))
         elif path == "/api/status":
-            self.reply_json(status.check(self.server.server_address[1], self.server.db_path, self.server.responder))
+            db_path = None if self.server.db is None else self.server.db_path
+            self.reply_json(status.check(self.server.server_address[1], db_path, self.server.responder))
         else:
             self.send_error(404)
 
