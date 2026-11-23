@@ -98,10 +98,11 @@ class Database:
         with self._lock, self._conn:
             self._insert_message(conversation_id, role, content)
 
-    def add_exchange(self, conversation_id: int | None, user: str, assistant: str) -> int:
+    def add_exchange(self, conversation_id: int | None, user: str, assistant: str) -> int | None:
         """user の発言と assistant の応答をこの順に 1 つのトランザクションで記録し、会話の id を返す。
 
-        conversation_id が None なら、同じトランザクションで新しい会話を作る。途中で失敗したら何も残らない。
+        conversation_id が None なら、同じトランザクションで新しい会話を作る。
+        その id の会話が無ければ何も記録せず None。途中で失敗したら何も残らない。
         """
         with self._lock, self._conn:
             if conversation_id is None:
@@ -109,6 +110,8 @@ class Database:
                 conversation_id = self._conn.execute(
                     "INSERT INTO conversations (created_at, updated_at) VALUES (?, ?)", (at, at)
                 ).lastrowid
+            elif not self._exists(conversation_id):
+                return None
             self._insert_message(conversation_id, "user", user)
             self._insert_message(conversation_id, "assistant", assistant)
         return conversation_id
@@ -129,17 +132,16 @@ class Database:
         """
         with self._lock, self._conn:
             # 先に有無を確かめる。読み取り専用の記録では、消す行が無くても DELETE が失敗する。
-            if self._conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone() is None:
+            if not self._exists(conversation_id):
                 return False
             # メッセージが先。会話を先に消すと外部キーの制約に掛かる。
             self._conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
             self._conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
         return True
 
-    def has_conversation(self, conversation_id: int) -> bool:
-        with self._lock:
-            row = self._conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
-        return row is not None
+    def _exists(self, conversation_id: int) -> bool:
+        # ロックを持って呼ぶ。
+        return self._conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone() is not None
 
     def list_conversations(self) -> list[ConversationSummary]:
         with self._lock:
@@ -156,8 +158,11 @@ class Database:
             ).fetchall()
         return [ConversationSummary(*row) for row in rows]
 
-    def messages(self, conversation_id: int) -> list[Message]:
+    def messages(self, conversation_id: int) -> list[Message] | None:
+        """その会話のメッセージを記録した順に返す。そのような会話が無ければ None。"""
         with self._lock:
+            if not self._exists(conversation_id):
+                return None
             rows = self._conn.execute(
                 "SELECT role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY id",
                 (conversation_id,),

@@ -27,14 +27,12 @@ def list_conversations(db: Database) -> dict:
 def conversation(db: Database, raw_id: str) -> dict | None:
     """URL の id の部分を受け取り、その会話のメッセージを記録した順に返す。そのような会話が無ければ None。"""
     conversation_id = parse_id(raw_id)
-    if conversation_id is None or not db.has_conversation(conversation_id):
+    messages = None if conversation_id is None else db.messages(conversation_id)
+    if messages is None:
         return None
     return {
         "id": conversation_id,
-        "messages": [
-            {"role": m.role, "text": m.content, "created_at": m.created_at}
-            for m in db.messages(conversation_id)
-        ],
+        "messages": [{"role": m.role, "text": m.content, "created_at": m.created_at} for m in messages],
     }
 
 

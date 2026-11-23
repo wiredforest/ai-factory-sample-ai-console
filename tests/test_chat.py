@@ -192,6 +192,20 @@ def test_a_failed_write_leaves_neither_the_conversation_nor_the_user_message(db)
     assert counts(db) == (0, 0)
 
 
+def test_a_conversation_deleted_while_the_ai_replies_is_not_found_and_records_nothing(db):
+    conversation = chat.send(db, llm.Fake(), {"conversation_id": None, "text": "りんごの話"})["conversation_id"]
+
+    class DeletingWhileReplying(llm.Fake):
+        def reply(self, messages):
+            db.delete_conversation(conversation)
+            return super().reply(messages)
+
+    with pytest.raises(chat.Rejected) as rejected:
+        chat.send(db, DeletingWhileReplying(), {"conversation_id": conversation, "text": "続きです"})
+    assert (rejected.value.status, rejected.value.error) == (404, "conversation_not_found")
+    assert counts(db) == (0, 0)
+
+
 def test_page_has_a_textarea_and_a_send_button(start_app):
     page = start_app().get("/").body.decode("utf-8")
     assert "<textarea" in page

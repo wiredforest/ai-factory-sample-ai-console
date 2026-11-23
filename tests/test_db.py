@@ -139,15 +139,21 @@ def test_exchange_joins_an_existing_conversation_and_moves_it_up(db):
 
 
 def test_exchange_to_a_missing_conversation_is_refused_and_adds_nothing(db):
-    with pytest.raises(sqlite3.IntegrityError):
-        db.add_exchange(999, "りんごの話", "fake reply #1: りんごの話")
+    assert db.add_exchange(999, "りんごの話", "fake reply #1: りんごの話") is None
     assert db.list_conversations() == []
 
 
-def test_has_conversation(db):
+def test_exchange_to_a_deleted_conversation_is_refused_and_adds_nothing(db):
+    a = db.add_exchange(None, "りんごの話", "fake reply #1: りんごの話")
+    db.delete_conversation(a)
+    assert db.add_exchange(a, "続きです", "fake reply #2: 続きです") is None
+    assert db.list_conversations() == []
+
+
+def test_messages_of_a_missing_conversation_are_none_not_empty(db):
     conversation = db.create_conversation()
-    assert db.has_conversation(conversation)
-    assert not db.has_conversation(conversation + 1)
+    assert db.messages(conversation) == []
+    assert db.messages(conversation + 1) is None
 
 
 def test_check_is_true_and_leaves_the_record_unchanged(db, db_path):

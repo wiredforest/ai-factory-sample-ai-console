@@ -171,7 +171,7 @@ def test_deleting_a_conversation_removes_it_and_its_messages_and_leaves_the_othe
     assert app.get(f"/api/conversations/{a}").status == 404
     assert opened(app, b) == kept
     with Database(os.environ["CONSOLE_DB_PATH"]) as reopened:
-        assert reopened.messages(a) == []
+        assert reopened.messages(a) is None
         assert [c.id for c in reopened.list_conversations()] == [b]
 
 
