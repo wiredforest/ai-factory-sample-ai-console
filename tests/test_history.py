@@ -163,3 +163,36 @@ def test_page_opens_the_selected_conversation_in_the_chat_area(start_app):
     assert "chatMessages.replaceChildren();" in body
     assert "addBubble(message.role, message.text)" in body
     assert "currentConversationId = conversationId;" in body
+
+
+def history_section(page: str) -> str:
+    return re.search(r'<section id="history">.*?</section>', page, re.DOTALL).group(0)
+
+
+def load_history_source(page: str) -> str:
+    return re.search(r"async function loadHistory\(\) \{\n(.*?)\n  \}\n", page, re.DOTALL).group(1)
+
+
+def test_page_has_an_unreadable_notice_apart_from_the_empty_one_and_both_start_hidden(start_app):
+    history = history_section(start_app().get("/").body.decode("utf-8"))
+    assert '<p class="empty" hidden>会話がまだありません</p>' in history
+    notice = re.search(r'<p class="history-error" hidden>([^<]+)</p>', history)
+    assert notice
+    assert "読めませんでした" in notice.group(1)
+    assert "会話がまだありません" not in notice.group(1)
+
+
+def test_a_503_and_a_failed_fetch_both_go_to_the_unreadable_notice(start_app):
+    source = load_history_source(start_app().get("/").body.decode("utf-8"))
+    attempt, failure = re.fullmatch(r"(?s).*?try \{\n(.*?)\n    \} catch \(error\) \{\n(.*?)\n    \}\n.*", source).groups()
+    # fetch が投げても、503 などで !response.ok になっても、同じ catch に入る。
+    assert 'await fetch("/api/conversations")' in attempt
+    assert re.search(r"if \(!response\.ok\) throw ", attempt)
+    assert "response.json()" in attempt
+    assert "historyError.hidden = false;" in failure
+    assert "historyEmpty.hidden = true;" in failure
+    assert "historyList.replaceChildren();" in failure
+    # 一覧を読めたら、前に出した「読めなかった」表示は消す。
+    succeeded = source.split(failure, 1)[1]
+    assert "historyError.hidden = true;" in succeeded
+    assert "historyEmpty.hidden = conversations.length > 0;" in succeeded
