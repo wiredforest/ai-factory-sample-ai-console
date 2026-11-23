@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import socket
 import sqlite3
 import threading
@@ -195,6 +196,41 @@ def test_page_has_a_textarea_and_a_send_button(start_app):
     page = start_app().get("/").body.decode("utf-8")
     assert "<textarea" in page
     assert '<button type="submit">送信</button>' in page
+
+
+def test_null_after_an_existing_conversation_starts_another_one(start_app, db):
+    app = start_app()
+    _, apple = send(app, None, "りんごの話")
+    r, orange = send(app, None, "みかんの話")
+    assert r.status == 200
+    assert orange["conversation_id"] != apple["conversation_id"]
+    assert orange["messages"][-1] == {"role": "assistant", "text": "fake reply #1: みかんの話"}
+    assert sorted(c.id for c in db.list_conversations()) == sorted([apple["conversation_id"], orange["conversation_id"]])
+    assert [m.content for m in db.messages(apple["conversation_id"])] == ["りんごの話", "fake reply #1: りんごの話"]
+
+
+def test_page_has_a_new_conversation_button_that_only_clears_the_view(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    assert '<button type="button" id="new-conversation">新しい会話</button>' in page
+    clicked = re.search(r'newConversationButton\.addEventListener\("click", \(\) => \{(.*?)\n  \}\);', page, re.DOTALL)
+    assert clicked
+    body = clicked.group(1)
+    assert "chatMessages.replaceChildren();" in body
+    assert 'composerText.value = "";' in body
+    assert "currentConversationId = null;" in body
+    assert "chatView++;" in body
+    # 押しただけでは会話を作らない。
+    assert "fetch(" not in body
+    # 履歴のサイドメニューは conversation-new を受けて、どの会話にも aria-current を付けない。
+    listened = re.search(r'addEventListener\("conversation-new", \(\) => \{(.*?)\n  \}\);', page, re.DOTALL)
+    assert listened
+    assert "currentHistoryId = null;" in listened.group(1)
+    assert "markCurrent();" in listened.group(1)
+    # 送信中に新しい会話にしたら、前の会話の応答で今の会話を上書きしない。
+    assert re.search(r"const shown = view === chatView;\n      if \(shown\) \{\n.*?currentConversationId = conversation_id;\n      \}", page, re.DOTALL)
+    # 送れなかった表示も消え、送信中に新しい会話にしたら、前の会話の送れなかった表示と本文を持ち込まない。
+    assert "unsent = [];" in body
+    assert page.count("if (view === chatView) showUnsent(") == 2
 
 
 def test_page_says_when_the_ai_is_unreachable_and_puts_the_text_back(start_app):
