@@ -60,3 +60,26 @@
 - **残っている制約**:
   - この WSL では `XDG_RUNTIME_DIR` (`/run/user/1000`) が存在しないため、`agent-browser` はこの変数が設定されていると起動しない。手元のシェルから校正や検証を起動するときは外すこと (スケジュール実行のサービスでは外してある)
   - 欠陥のアンカーはコードの変更で外れる (今回 2 件が外れていた)。外れた欠陥は `NOT_INJECTED` になり、何も確かめない。機能が入るたびに `run.py apply` で全件の注入を確かめる
+
+### 2026-11-23 — 3 回目 (backlog の #4〜#12・#16・#25 がすべて入った後)
+
+- **検証したソース**: `c2a1902f11e2bfcb4fec98f8c1ffaca23951b821` (アプリのコードは `main` の `feae431` と同じ。差分は `harness/mutations/defects.json` だけ)。リソースは `runtime_resource.py prepare` でこのリビジョンに結び付けた (`resource_digest` `380c405e…`)
+- **アサーション**: 4 つ。ジャーニー 3 を画面で通すものに作り直した。ブラウザで 2 つの会話を作って読み直し、履歴が新しい順に 2 件並ぶこと、古い方を開き直すと吹き出しがちょうど 2 つ出ること、続けて送ると `fake reply #2: …` が返り、その会話が一番上に移ること、読み直して開くと 4 つ残っていることを確かめる。最初の画面のアサーションは、空の表示が**読める**こと (文字の色が背景と見分けられること) まで求めるようにした。アプリの再起動はランタイムホストの持ち分なので、ページの読み直しで代えた。API やデータベースで状態を作ることは禁じた
+- **結果** (Archon の共有ワークフローのネイティブの戻り値):
+
+| 対照 | 候補 | 期待 | 結果 | 落ちたアサーション |
+|---|---|---|---|---|
+| 基準状態 | `factory-v1:c8517f8a…` | verified | verified (matched) | — |
+| `history-oldest-first` (画面だけが履歴を古い順に並べる) | `factory-v1:2b1bef22…` | failed | failed (matched)、`score-runtime` で CAUGHT | `two-conversations-newest-first`、`reopen-and-continue` |
+| `reopen-drops-first-bubble` (開き直すと最初の吹き出しが消える) | `factory-v1:667930b8…` | failed | failed (matched)、`score-runtime` で CAUGHT | `reopen-and-continue` |
+| `empty-history-message-invisible` (空の表示が背景と同じ白で読めない) | `factory-v1:c69a9ddc…` | failed | failed (matched)、`score-runtime` で CAUGHT | `first-screen-empty-history-readable` |
+| 別のビルドを指す識別値 (すべて 0) | 基準状態のスロット | inconclusive | inconclusive (`target identity does not match the requested candidate`) | — |
+
+  スイート `archon-verify-runtime-suite` `bc36f9e4…` は `expectations_passed: true`、`baseline_verified: true` (費用 $0.71)。識別値の対照は `archon-verify-runtime` `cbd0e8d5…`。検証担当は `agent-browser` で画面を操作し、スクリーンショットを 19 枚残した。基準状態の最終画面 (吹き出し 4 つ、`#2`、りんごの話が上)、欠陥入りの履歴の並び (りんごの話が上のまま)、開き直した会話 (AI の吹き出しだけ)、空の履歴 (文言が見えない) を、スクリーンショットで確かめた
+
+- **通常のチェックでの欠陥の検出** (13 件。1 件のアンカーを今のコードに合わせ、2 件を足した):
+  - CAUGHT (unit): `health-says-not-ok`、`build-id-ignores-candidate`、`listens-on-all-interfaces`、`config-error-exits-zero`、`fake-down-rejected`、`default-llm-flipped`、`port-in-use-exits-zero`、`history-not-sent-to-ai`、`empty-history-message-hidden`、`conversation-not-continued`。後ろの 2 件は前回すり抜けていたが、#25 と #11 で足されたテストがページのソースの文字列を確かめるようになり、捕まるようになった (振る舞いではなく文字列で捕まえている点に注意)
+  - ESCAPED: `history-oldest-first`、`reopen-drops-first-bubble`、`empty-history-message-invisible` (3 件とも上のランタイムの校正で捕まった)
+- **残っている制約**:
+  - アプリの再起動を挟む手順 (ジャーニー 3 の 3・7) は、この校正では確かめていない。ラップのアプリ検査は `harness/RUNTIME.md` の手順で再起動まで行っている
+  - `archon-loop` のアプリ検査は、ランタイムホストではなく `harness/RUNTIME.md` の手順でアプリを起動している。この校正が示すのは、ランタイム検証の判定が健全なことまで
