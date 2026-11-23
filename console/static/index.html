@@ -296,8 +296,8 @@
       if (shown) {
         // 自分の吹き出しはもう出ているので、AI の応答だけを足す。
         addBubble("assistant", messages[messages.length - 1].text);
-        currentConversationId = conversation_id;
         currentFirstText ??= text;
+        currentConversationId = conversation_id;
       }
       document.dispatchEvent(new CustomEvent("conversation-updated", { detail: { conversationId: conversation_id, shown } }));
     } finally {
