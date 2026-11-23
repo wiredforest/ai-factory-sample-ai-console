@@ -31,6 +31,7 @@
   .bubble .text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .bubble.user { align-self: flex-end; background: #d7ecff; }
   .bubble.assistant { align-self: flex-start; background: #fff; border: 1px solid #ddd; }
+  #messages .error { align-self: flex-end; margin: 0; color: #c62828; font-weight: bold; }
   #composer { display: flex; gap: 0.5rem; }
   #composer textarea { flex: 1; resize: vertical; min-height: 3rem; font: inherit; padding: 0.5rem; }
   #composer button { font: inherit; padding: 0 1rem; }
@@ -106,6 +107,8 @@
   const SPEAKERS = { user: "あなた", assistant: "AI" };
   // 今の会話の id。まだ 1 通も送っていない新しい会話では null。
   let currentConversationId = null;
+  // 送れなかった送信の、記録されていない自分の吹き出しとその後の表示。
+  let unsent = [];
 
   function addBubble(role, text) {
     const bubble = document.createElement("div");
@@ -119,6 +122,28 @@
     bubble.append(speaker, body);
     chatMessages.append(bubble);
     chatMessages.scrollTop = chatMessages.scrollHeight;
+    return bubble;
+  }
+
+  // 送れなかった応答の本文の error。本文が JSON でない (届く前の代理など) ときは null。
+  async function errorOf(response) {
+    try {
+      return (await response.json()).error ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  function showUnsent(bubble, text, message) {
+    const notice = document.createElement("p");
+    notice.className = "error";
+    notice.setAttribute("role", "alert");
+    notice.textContent = `${message}。もう一度送信できます。`;
+    bubble.after(notice);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+    unsent = [bubble, notice];
+    // 待っている間に新しく打ち始めていたら、それを消さない。送った本文は吹き出しに残っている。
+    if (!composerText.value) composerText.value = text;
   }
 
   async function sendMessage() {
@@ -126,15 +151,28 @@
     if (sendButton.disabled || !text.trim()) return;
     sendButton.disabled = true;
     composerText.value = "";
-    addBubble("user", text);
+    // 前に送れなかった吹き出しは記録されていない。送り直す分の吹き出しで置き換え、同じ発言を重ねない。
+    unsent.forEach((element) => element.remove());
+    unsent = [];
+    const bubble = addBubble("user", text);
     try {
-      const response = await fetch("/api/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversation_id: currentConversationId, text }),
-      });
-      // 送れなかったときの表示は S4 (#12) で足す。
-      if (!response.ok) throw new Error(`POST /api/messages: ${response.status}`);
+      let response;
+      try {
+        response = await fetch("/api/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ conversation_id: currentConversationId, text }),
+        });
+      } catch (error) {
+        // サーバに届かない。AI に繋がらないときと同じく、送った本文は記録されていない。
+        showUnsent(bubble, text, "AI に繋がりません");
+        throw error;
+      }
+      if (!response.ok) {
+        const error = await errorOf(response);
+        showUnsent(bubble, text, error === "llm_unavailable" ? "AI に繋がりません" : "送信できませんでした");
+        throw new Error(`POST /api/messages: ${response.status} ${error}`);
+      }
       const { conversation_id, messages } = await response.json();
       // 自分の吹き出しはもう出ているので、AI の応答だけを足す。
       addBubble("assistant", messages[messages.length - 1].text);
