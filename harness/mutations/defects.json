@@ -106,8 +106,8 @@
     {
       "id": "port-in-use-exits-zero",
       "file": "console/server.py",
-      "find": "はすでに使われています\", file=sys.stderr)\n            return 2",
-      "replace": "はすでに使われています\", file=sys.stderr)\n            return 0",
+      "find": "はすでに使われています\", file=sys.stderr)\n        return 2",
+      "replace": "はすでに使われています\", file=sys.stderr)\n        return 0",
       "why": "ポートが使われていて起動できないのに成功として終わっても通るなら、起動の失敗が黙って見過ごされる (#16)。"
     },
     {
@@ -123,6 +123,20 @@
       "find": "currentConversationId = conversation_id;",
       "replace": "currentConversationId = null;",
       "why": "画面が送るたびに新しい会話を作り、続けて話しても同じ会話にならない。API は正しく、画面の JS だけが壊れる。これが通るなら、画面の操作で 2 往復する検証が無い。"
+    },
+    {
+      "id": "history-oldest-first",
+      "file": "console/static/index.html",
+      "find": "historyList.replaceChildren(...conversations.map(",
+      "replace": "historyList.replaceChildren(...[...conversations].reverse().map(",
+      "why": "API は新しい順に返すのに、画面だけが古い順に並べる。これが通るなら、ジャーニー 3 の「新しい順」は画面では誰も確かめていない。"
+    },
+    {
+      "id": "reopen-drops-first-bubble",
+      "file": "console/static/index.html",
+      "find": "for (const message of messages) addBubble(",
+      "replace": "for (const message of messages.slice(1)) addBubble(",
+      "why": "履歴から開き直すと最初の発言が画面から消える (記録には残っている)。これが通るなら、開き直した会話の中身は画面では誰も確かめていない。"
     }
   ],
   "_aiming_is_not_landing": [
