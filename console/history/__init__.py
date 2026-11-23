@@ -1,8 +1,12 @@
-"""履歴のスライス: 記録された会話を、見分ける手掛かりと更新時刻つきで新しい順に並べる。"""
+"""履歴のスライス: 記録された会話を、見分ける手掛かりと更新時刻つきで新しい順に並べ、選んだ会話のやり取りを返す。"""
+
+import re
 
 from console.db import ConversationSummary, Database
 
 TITLE_LENGTH = 30
+# SQLite の INTEGER に収まらない id は、問い合わせると OverflowError になる。そのような会話は無い。
+MAX_ID = 2**63 - 1
 
 
 def title(summary: ConversationSummary) -> str:
@@ -17,4 +21,21 @@ def list_conversations(db: Database) -> dict:
             {"id": summary.id, "title": title(summary), "updated_at": summary.updated_at}
             for summary in db.list_conversations()
         ]
+    }
+
+
+def conversation(db: Database, raw_id: str) -> dict | None:
+    """URL の id の部分を受け取り、その会話のメッセージを記録した順に返す。そのような会話が無ければ None。"""
+    # 0 始まりや符号、全角の数字は会話の id として書かれない。int() に任せると受け付けてしまう。
+    if not re.fullmatch(r"[1-9][0-9]*", raw_id):
+        return None
+    conversation_id = int(raw_id)
+    if conversation_id > MAX_ID or not db.has_conversation(conversation_id):
+        return None
+    return {
+        "id": conversation_id,
+        "messages": [
+            {"role": m.role, "text": m.content, "created_at": m.created_at}
+            for m in db.messages(conversation_id)
+        ],
     }
