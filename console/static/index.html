@@ -21,7 +21,10 @@
   #status { border-left: 1px solid #ddd; background: #fff; }
   .empty { color: #777; }
   #conversations { list-style: none; margin: 0; padding: 0; }
-  #conversations li { padding: 0.5rem 0; border-bottom: 1px solid #eee; }
+  #conversations li { border-bottom: 1px solid #eee; }
+  #conversations button { display: block; width: 100%; padding: 0.5rem; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+  #conversations button:hover { background: #f2f2ef; }
+  #conversations li[aria-current="true"] button { background: #e3effa; }
   #conversations .title { display: block; overflow-wrap: anywhere; }
   #conversations time { font-size: 0.8rem; color: #777; }
   #chat { display: flex; flex-direction: column; overflow: hidden; }
@@ -74,6 +77,9 @@
   const historyEmpty = document.querySelector("#history .empty");
   const historyError = document.querySelector("#history .history-error");
   let historyRequest = 0;
+  let openRequest = 0;
+  // 今の会話の id。一覧を読み直しても、その項目に aria-current を付け直す。
+  let currentHistoryId = null;
 
   function localTime(iso) {
     const at = new Date(iso);
@@ -102,24 +108,58 @@
     historyList.replaceChildren(...conversations.map((conversation) => {
       const item = document.createElement("li");
       item.dataset.conversationId = conversation.id;
+      const open = document.createElement("button");
+      open.type = "button";
+      open.addEventListener("click", () => openConversation(conversation.id));
       const title = document.createElement("span");
       title.className = "title";
       title.textContent = conversation.title;
       const time = document.createElement("time");
       time.dateTime = conversation.updated_at;
       time.textContent = localTime(conversation.updated_at);
-      item.append(title, time);
+      open.append(title, time);
+      item.append(open);
       return item;
     }));
+    markCurrent();
     // 空の表示は、一覧を読み終えてから出す。先に出すと、会話があるのに一瞬「まだありません」と見える。
     historyEmpty.hidden = conversations.length > 0;
   }
 
+  function markCurrent() {
+    for (const item of historyList.children) {
+      if (Number(item.dataset.conversationId) === currentHistoryId) {
+        item.setAttribute("aria-current", "true");
+      } else {
+        item.removeAttribute("aria-current");
+      }
+    }
+  }
+
+  async function openConversation(conversationId) {
+    // 続けて選んだら、最後に選んだ会話だけを開く。
+    const request = ++openRequest;
+    const response = await fetch(`/api/conversations/${conversationId}`);
+    if (!response.ok) throw new Error(`GET /api/conversations/${conversationId}: ${response.status}`);
+    const { id, messages } = await response.json();
+    if (request !== openRequest) return;
+    currentHistoryId = id;
+    markCurrent();
+    // 会話の送受信は conversation-opened を受けて、会話の領域をこのメッセージで置き換え、今の会話にする。
+    document.dispatchEvent(new CustomEvent("conversation-opened", { detail: { conversationId: id, messages } }));
+  }
+
   // 会話の送受信は、送信が成功するたびに document へ conversation-updated を送る。
-  document.addEventListener("conversation-updated", loadHistory);
-  // 新しい会話はまだ記録に無いので、一覧のどの会話も今の会話ではなくなる。
+  // shown は、その会話を今も会話の領域に出しているか (送っている間に別の会話を開いていないか)。
+  document.addEventListener("conversation-updated", (event) => {
+    if (event.detail.shown) currentHistoryId = event.detail.conversationId;
+    loadHistory();
+  });
+  // 新しい会話はまだ記録に無いので、一覧のどの会話も今の会話ではなくなる。開いている途中の会話も開かない。
   document.addEventListener("conversation-new", () => {
-    for (const item of historyList.querySelectorAll("[aria-current]")) item.removeAttribute("aria-current");
+    openRequest++;
+    currentHistoryId = null;
+    markCurrent();
   });
   loadHistory();
 
@@ -131,7 +171,7 @@
   const SPEAKERS = { user: "あなた", assistant: "AI" };
   // 今の会話の id。まだ 1 通も送っていない新しい会話では null。
   let currentConversationId = null;
-  // 会話の領域に出している会話が変わるたびに増やす。送信中に新しい会話にしたら、前の会話の応答をここに出さない。
+  // 会話の領域に出している会話が変わるたびに増やす。送信中に別の会話を開いたり新しい会話にしたりしたら、前の会話の応答をここに出さない。
   let chatView = 0;
   // 送れなかった送信の、記録されていない自分の吹き出しとその後の表示。
   let unsent = [];
@@ -160,9 +200,7 @@
     }
   }
 
-  function showUnsent(view, bubble, text, message) {
-    // 送っている間に新しい会話にしていたら、前の会話の送れなかった表示も本文も新しい会話に持ち込まない。
-    if (view !== chatView) return;
+  function showUnsent(bubble, text, message) {
     const notice = document.createElement("p");
     notice.className = "error";
     notice.setAttribute("role", "alert");
@@ -177,13 +215,13 @@
   async function sendMessage() {
     const text = composerText.value;
     if (sendButton.disabled || !text.trim()) return;
-    const view = chatView;
     sendButton.disabled = true;
     composerText.value = "";
     // 前に送れなかった吹き出しは記録されていない。送り直す分の吹き出しで置き換え、同じ発言を重ねない。
     unsent.forEach((element) => element.remove());
     unsent = [];
     const bubble = addBubble("user", text);
+    const view = chatView;
     try {
       let response;
       try {
@@ -194,26 +232,38 @@
         });
       } catch (error) {
         // サーバに届かない。AI に繋がらないときと同じく、送った本文は記録されていない。
-        showUnsent(view, bubble, text, "AI に繋がりません");
+        if (view === chatView) showUnsent(bubble, text, "AI に繋がりません");
         throw error;
       }
       if (!response.ok) {
         const error = await errorOf(response);
-        showUnsent(view, bubble, text, error === "llm_unavailable" ? "AI に繋がりません" : "送信できませんでした");
+        // 送っている間に別の会話を開いていたら、送れなかった表示も本文も、開いた会話には出さない。
+        if (view === chatView) showUnsent(bubble, text, error === "llm_unavailable" ? "AI に繋がりません" : "送信できませんでした");
         throw new Error(`POST /api/messages: ${response.status} ${error}`);
       }
       const { conversation_id, messages } = await response.json();
-      if (view === chatView) {
+      const shown = view === chatView;
+      if (shown) {
         // 自分の吹き出しはもう出ているので、AI の応答だけを足す。
         addBubble("assistant", messages[messages.length - 1].text);
         currentConversationId = conversation_id;
       }
-      document.dispatchEvent(new CustomEvent("conversation-updated", { detail: { conversationId: conversation_id } }));
+      document.dispatchEvent(new CustomEvent("conversation-updated", { detail: { conversationId: conversation_id, shown } }));
     } finally {
       sendButton.disabled = false;
       composerText.focus();
     }
   }
+
+  document.addEventListener("conversation-opened", (event) => {
+    const { conversationId, messages } = event.detail;
+    chatView++;
+    // 送れなかった吹き出しも、前の会話のものなので一緒に消える。
+    chatMessages.replaceChildren();
+    unsent = [];
+    for (const message of messages) addBubble(message.role, message.text);
+    currentConversationId = conversationId;
+  });
 
   // 押しただけでは会話を作らない。次の送信が conversation_id: null で送られ、成功したときに記録される。
   newConversationButton.addEventListener("click", () => {

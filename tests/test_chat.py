@@ -221,12 +221,16 @@ def test_page_has_a_new_conversation_button_that_only_clears_the_view(start_app)
     assert "chatView++;" in body
     # 押しただけでは会話を作らない。
     assert "fetch(" not in body
-    assert 'item.removeAttribute("aria-current")' in page
+    # 履歴のサイドメニューは conversation-new を受けて、どの会話にも aria-current を付けない。
+    listened = re.search(r'addEventListener\("conversation-new", \(\) => \{(.*?)\n  \}\);', page, re.DOTALL)
+    assert listened
+    assert "currentHistoryId = null;" in listened.group(1)
+    assert "markCurrent();" in listened.group(1)
     # 送信中に新しい会話にしたら、前の会話の応答で今の会話を上書きしない。
-    assert re.search(r"if \(view === chatView\) \{\n.*?currentConversationId = conversation_id;\n      \}", page, re.DOTALL)
+    assert re.search(r"const shown = view === chatView;\n      if \(shown\) \{\n.*?currentConversationId = conversation_id;\n      \}", page, re.DOTALL)
     # 送れなかった表示も消え、送信中に新しい会話にしたら、前の会話の送れなかった表示と本文を持ち込まない。
     assert "unsent = [];" in body
-    assert "if (view !== chatView) return;" in page
+    assert page.count("if (view === chatView) showUnsent(") == 2
 
 
 def test_page_says_when_the_ai_is_unreachable_and_puts_the_text_back(start_app):
