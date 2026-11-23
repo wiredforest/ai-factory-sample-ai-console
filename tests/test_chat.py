@@ -1,6 +1,8 @@
 import json
 import os
+import socket
 import sqlite3
+import threading
 
 import pytest
 
@@ -122,6 +124,34 @@ def test_unreachable_ai_adds_nothing_to_an_existing_conversation(start_app, db):
     assert len(db.messages(conversation)) == 2
 
 
+def test_anthropic_without_key_is_unavailable_without_going_out(start_app, db, monkeypatch):
+    # HTTPS を受ける代理の罠。urllib は https_proxy に従うので、外へ出ようとすればここに繋がる。
+    with socket.create_server(("127.0.0.1", 0)) as trap:
+        for name in ("no_proxy", "NO_PROXY"):
+            monkeypatch.delenv(name, raising=False)
+        proxy = f"http://127.0.0.1:{trap.getsockname()[1]}"
+        monkeypatch.setenv("https_proxy", proxy)
+        monkeypatch.setenv("HTTPS_PROXY", proxy)
+        trap.setblocking(False)
+
+        assert "ANTHROPIC_API_KEY" not in os.environ
+        r, body = send(start_app(CONSOLE_LLM="anthropic"), None, FIRST)
+        assert (r.status, body["error"]) == (503, "llm_unavailable")
+        with pytest.raises(BlockingIOError):
+            trap.accept()
+        assert counts(db) == (0, 0)
+
+        # 罠が効いていることの確かめ: 鍵があれば外へ出ようとして罠に繋がる。すぐ切るので繋がらない扱いになる。
+        trap.setblocking(True)
+        trap.settimeout(10)
+        caught = []
+        threading.Thread(target=lambda: caught.append(trap.accept()[0].close()), daemon=True).start()
+        r, body = send(start_app(CONSOLE_LLM="anthropic", ANTHROPIC_API_KEY="not-a-real-key"), None, FIRST)
+        assert (r.status, body["error"]) == (503, "llm_unavailable")
+        assert caught == [None]
+        assert counts(db) == (0, 0)
+
+
 class Recording:
     def __init__(self) -> None:
         self.seen: list[list[llm.Message]] = []
@@ -165,3 +195,11 @@ def test_page_has_a_textarea_and_a_send_button(start_app):
     page = start_app().get("/").body.decode("utf-8")
     assert "<textarea" in page
     assert '<button type="submit">送信</button>' in page
+
+
+def test_page_says_when_the_ai_is_unreachable_and_puts_the_text_back(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    assert 'error === "llm_unavailable" ? "AI に繋がりません"' in page
+    assert "。もう一度送信できます。" in page
+    assert 'notice.className = "error"' in page
+    assert "composerText.value = text" in page
