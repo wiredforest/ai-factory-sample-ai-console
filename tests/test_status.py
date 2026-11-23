@@ -79,7 +79,7 @@ def test_checking_three_times_changes_no_conversation_or_message(start_app, db):
         assert oks(items(app)) == [True, True, True]
     assert db.list_conversations() == before
     assert len(before) == 1
-    assert len(db.messages(conversation)) == 2
+    assert len(db.conversation(conversation).messages) == 2
 
 
 def test_page_has_the_recheck_button_and_reads_the_status(start_app):

@@ -31,15 +31,16 @@ def send(db: Database, responder: llm.Responder, request: object) -> dict:
     if not text.strip():
         raise Rejected(400, "empty_text")
     if conversation_id is None:
+        conversation = None
         history: list[llm.Message] = []
     else:
-        recorded = db.messages(conversation_id) if 0 < conversation_id <= MAX_ID else None
-        if recorded is None:
+        conversation = db.conversation(conversation_id) if 0 < conversation_id <= MAX_ID else None
+        if conversation is None:
             raise Rejected(404, "conversation_not_found")
-        history = [{"role": m.role, "content": m.content} for m in recorded]
+        history = [{"role": m.role, "content": m.content} for m in conversation.messages]
     answer = responder.reply([*history, {"role": "user", "content": text}])
-    # 応答を待つ間に会話が消されていれば、記録されない。
-    recorded_id = db.add_exchange(conversation_id, text, answer)
+    # 応答を待つ間に会話が消されていれば、その id が別の会話に使い直されていても、記録されない。
+    recorded_id = db.add_exchange(conversation, text, answer)
     if recorded_id is None:
         raise Rejected(404, "conversation_not_found")
     return {

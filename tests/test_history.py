@@ -48,7 +48,7 @@ def test_each_conversation_carries_id_title_and_iso_update_time(start_app, db):
     db.add_message(a, "assistant", "fake reply #1: りんごの話")
     db.add_message(a, "user", "ほかの話")
     [conversation] = conversations(start_app())
-    assert conversation == {"id": a, "title": "りんごの話", "updated_at": db.messages(a)[-1].created_at}
+    assert conversation == {"id": a, "title": "りんごの話", "updated_at": db.conversation(a).messages[-1].created_at}
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}\+00:00", conversation["updated_at"])
 
 
@@ -105,7 +105,7 @@ def test_opening_a_conversation_returns_only_its_messages_in_order(start_app, db
     messages = opened(app, a)
     assert roles_and_texts(messages) == [("user", "りんごの話"), ("assistant", "fake reply #1: りんごの話")]
     assert "みかん" not in json.dumps(messages, ensure_ascii=False)
-    assert [m["created_at"] for m in messages] == [m.created_at for m in db.messages(a)]
+    assert [m["created_at"] for m in messages] == [m.created_at for m in db.conversation(a).messages]
     assert roles_and_texts(opened(app, b)) == [("user", "みかんの話"), ("assistant", "fake reply #1: みかんの話")]
 
 
@@ -171,7 +171,7 @@ def test_deleting_a_conversation_removes_it_and_its_messages_and_leaves_the_othe
     assert app.get(f"/api/conversations/{a}").status == 404
     assert opened(app, b) == kept
     with Database(os.environ["CONSOLE_DB_PATH"]) as reopened:
-        assert reopened.messages(a) is None
+        assert reopened.conversation(a) is None
         assert [c.id for c in reopened.list_conversations()] == [b]
 
 
