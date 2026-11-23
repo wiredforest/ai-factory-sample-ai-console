@@ -26,11 +26,8 @@ def list_conversations(db: Database) -> dict:
 
 def conversation(db: Database, raw_id: str) -> dict | None:
     """URL の id の部分を受け取り、その会話のメッセージを記録した順に返す。そのような会話が無ければ None。"""
-    # 0 始まりや符号、全角の数字は会話の id として書かれない。int() に任せると受け付けてしまう。
-    if not re.fullmatch(r"[1-9][0-9]*", raw_id):
-        return None
-    conversation_id = int(raw_id)
-    if conversation_id > MAX_ID or not db.has_conversation(conversation_id):
+    conversation_id = parse_id(raw_id)
+    if conversation_id is None or not db.has_conversation(conversation_id):
         return None
     return {
         "id": conversation_id,
@@ -39,3 +36,22 @@ def conversation(db: Database, raw_id: str) -> dict | None:
             for m in db.messages(conversation_id)
         ],
     }
+
+
+def delete(db: Database, raw_id: str) -> dict | None:
+    """URL の id の部分を受け取り、その会話とメッセージを消してコミットしてから id を返す。そのような会話が無ければ None。
+
+    記録に書けなければ sqlite3.Error をそのまま送出する。そのときは何も消えていない。
+    """
+    conversation_id = parse_id(raw_id)
+    if conversation_id is None or not db.delete_conversation(conversation_id):
+        return None
+    return {"id": conversation_id}
+
+
+def parse_id(raw_id: str) -> int | None:
+    # 0 始まりや符号、全角の数字は会話の id として書かれない。int() に任せると受け付けてしまう。
+    if not re.fullmatch(r"[1-9][0-9]*", raw_id):
+        return None
+    conversation_id = int(raw_id)
+    return conversation_id if conversation_id <= MAX_ID else None

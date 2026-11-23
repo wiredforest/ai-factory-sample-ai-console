@@ -122,6 +122,20 @@ class Database:
         )
         self._conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (at, conversation_id))
 
+    def delete_conversation(self, conversation_id: int) -> bool:
+        """その会話とメッセージをすべて 1 つのトランザクションで消してコミットする。そのような会話が無ければ何もせず False。
+
+        途中で失敗したら何も消えない。
+        """
+        with self._lock, self._conn:
+            # 先に有無を確かめる。読み取り専用の記録では、消す行が無くても DELETE が失敗する。
+            if self._conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone() is None:
+                return False
+            # メッセージが先。会話を先に消すと外部キーの制約に掛かる。
+            self._conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
+            self._conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+        return True
+
     def has_conversation(self, conversation_id: int) -> bool:
         with self._lock:
             row = self._conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
