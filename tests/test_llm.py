@@ -4,6 +4,7 @@ import json
 import traceback
 import urllib.error
 import urllib.request
+from datetime import date
 
 import pytest
 
@@ -113,9 +114,46 @@ def test_anthropic_posts_the_whole_history_and_joins_the_text(stub_urlopen, api_
     assert request.get_header("Content-type") == "application/json"
     body = json.loads(request.data)
     assert body["model"] == "claude-haiku-5-5"
-    assert body["max_tokens"] == 1024
+    assert body["max_tokens"] == 4096
     assert body["messages"] == FRUIT_FOLLOW_UP
-    assert timeout == 30
+    assert timeout == 90
+
+
+def test_anthropic_tells_the_date_of_each_send_in_the_system_prompt(stub_urlopen, api_key, monkeypatch):
+    fake = stub_urlopen(answer={"content": [{"type": "text", "text": "はい"}]})
+    anthropic = responder("anthropic")
+    path = config.load().db_path
+    with Database(path) as db:
+        monkeypatch.setattr(llm, "today", lambda: date(2026, 11, 24))
+        first = chat.send(db, anthropic, {"conversation_id": None, "text": FRUIT[0]["content"]})
+        monkeypatch.setattr(llm, "today", lambda: date(2027, 1, 2))
+        chat.send(db, anthropic, {"conversation_id": first["conversation_id"], "text": "今日は何日ですか"})
+    [before, after] = [json.loads(request.data)["system"] for request, _ in fake.calls]
+    assert isinstance(before, str)
+    assert "2026-11-24" in before
+    assert "日本語" in before
+    assert "簡潔" in before
+    assert isinstance(after, str)
+    assert "2027-01-02" in after
+    assert "2026-11-24" not in after
+
+
+def test_the_system_prompt_stays_out_of_the_messages_and_the_record(stub_urlopen, api_key):
+    fake = stub_urlopen(answer={"content": [{"type": "text", "text": "はい"}]})
+    anthropic = responder("anthropic")
+    with Database(config.load().db_path) as db:
+        conversation_id = None
+        for sends, text in enumerate(["一つ目", "二つ目", "三つ目"], start=1):
+            sent = chat.send(db, anthropic, {"conversation_id": conversation_id, "text": text})
+            conversation_id = sent["conversation_id"]
+            recorded = db.conversation(conversation_id).messages
+            assert len(recorded) == 2 * sends
+            assert {m.role for m in recorded} == {"user", "assistant"}
+            assert not any(m.content == json.loads(fake.calls[-1][0].data)["system"] for m in recorded)
+    for request, timeout in fake.calls:
+        body = json.loads(request.data)
+        assert {m["role"] for m in body["messages"]} <= {"user", "assistant"}
+        assert timeout == 90
 
 
 @pytest.mark.parametrize(("value", "model"), [
