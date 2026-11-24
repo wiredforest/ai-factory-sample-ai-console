@@ -1,14 +1,20 @@
+import http.client
 import json
 import os
 import re
 import socket
 import sqlite3
 import threading
+import traceback
+import urllib.error
+import urllib.request
 
 import pytest
+from test_llm import FakeUrlopen, http_error
 
 from console import chat, llm
 from console.db import Database
+from console.server import ConsoleServer
 
 FIRST = "私の好きな果物はびわです"
 SECOND = "私の好きな果物は何ですか"
@@ -151,6 +157,66 @@ def test_anthropic_without_key_is_unavailable_without_going_out(start_app, db, m
         assert (r.status, body["error"]) == (503, "llm_unavailable")
         assert caught == [None]
         assert counts(db) == (0, 0)
+
+
+LEAKY_KEY = "sk-ant-test-LEAKCHECK-0123456789"
+FAILURE_MESSAGES = {
+    "llm_key_rejected": "AI の鍵 (ANTHROPIC_API_KEY) が正しくありません",
+    "llm_busy": "AI が混んでいます。少し待ってから送り直してください",
+    "llm_unavailable": "AI に繋がりません",
+}
+
+
+def post_in_process(responder: llm.Responder, conversation_id: int | None) -> tuple[int, bytes]:
+    """同じプロセスでサーバを動かして送る。urlopen の差し替えがサーバにも効く。"""
+    with ConsoleServer(0, os.environ["CONSOLE_DB_PATH"], responder) as server:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=10)
+            try:
+                body = json.dumps({"conversation_id": conversation_id, "text": SECOND}, ensure_ascii=False)
+                conn.request("POST", "/api/messages", body.encode("utf-8"), {"Content-Type": "application/json"})
+                r = conn.getresponse()
+                return r.status, r.read()
+            finally:
+                conn.close()
+        finally:
+            server.shutdown()
+
+
+# stub が None のときは urlopen を差し替えない (conftest の refuse_network のまま)。外へ出ようとすればテストが失敗する。
+@pytest.mark.parametrize(("llm_name", "key", "stub", "error"), [
+    ("anthropic", LEAKY_KEY, {"error": http_error(401)}, "llm_key_rejected"),
+    ("anthropic", LEAKY_KEY, {"error": http_error(403)}, "llm_key_rejected"),
+    ("anthropic", LEAKY_KEY, {"error": http_error(429)}, "llm_busy"),
+    ("anthropic", LEAKY_KEY, {"error": http_error(529)}, "llm_busy"),
+    ("anthropic", LEAKY_KEY, {"error": http_error(500)}, "llm_unavailable"),
+    ("anthropic", LEAKY_KEY, {"error": http_error(404)}, "llm_unavailable"),
+    ("anthropic", LEAKY_KEY, {"error": urllib.error.URLError("connection refused")}, "llm_unavailable"),
+    ("anthropic", LEAKY_KEY, {"error": TimeoutError("timed out")}, "llm_unavailable"),
+    ("anthropic", LEAKY_KEY, {"answer": {"content": None}}, "llm_unavailable"),
+    ("anthropic", None, None, "llm_unavailable"),
+    ("fake-down", LEAKY_KEY, None, "llm_unavailable"),
+], ids=["HTTPError-401", "HTTPError-403", "HTTPError-429", "HTTPError-529", "HTTPError-500", "HTTPError-404",
+        "URLError", "TimeoutError", "unexpected-shape", "anthropic-without-key", "fake-down"])
+def test_a_failed_send_says_why_records_nothing_and_never_shows_the_key(db, monkeypatch, capfd, llm_name, key, stub, error):
+    if key is not None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", key)
+    if stub is not None:
+        monkeypatch.setattr(urllib.request, "urlopen", FakeUrlopen(**stub))
+    conversation = db.add_exchange(None, FIRST, f"fake reply #1: {FIRST}")
+    before = counts(db)
+    responder = llm.responder(llm_name)
+
+    with pytest.raises(llm.Unreachable) as raised:
+        responder.reply([{"role": "user", "content": SECOND}])
+    assert "LEAKCHECK" not in "".join(traceback.format_exception(raised.value))
+    for conversation_id in (None, conversation):
+        status, body = post_in_process(responder, conversation_id)
+        assert (status, json.loads(body)) == (503, {"error": error, "message": FAILURE_MESSAGES[error]})
+        assert "LEAKCHECK" not in body.decode("utf-8")
+    assert counts(db) == before
+    assert "LEAKCHECK" not in capfd.readouterr().err
 
 
 class Recording:

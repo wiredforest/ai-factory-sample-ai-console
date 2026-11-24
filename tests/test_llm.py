@@ -118,16 +118,23 @@ def test_anthropic_skips_blocks_that_are_not_text(stub_urlopen, api_key):
     assert llm.responder("anthropic").reply(FRUIT) == "前半後半"
 
 
-@pytest.mark.parametrize("error", [
-    urllib.error.URLError("connection refused"),
-    http_error(500),
-    TimeoutError("timed out"),
-], ids=["URLError", "HTTPError-500", "TimeoutError"])
-def test_anthropic_failures_become_unreachable_without_the_key(stub_urlopen, api_key, error):
+@pytest.mark.parametrize(("error", "kind"), [
+    (http_error(401), llm.KeyRejected),
+    (http_error(403), llm.KeyRejected),
+    (http_error(429), llm.Busy),
+    (http_error(529), llm.Busy),
+    (http_error(500), llm.Unreachable),
+    (http_error(404), llm.Unreachable),
+    (urllib.error.URLError("connection refused"), llm.Unreachable),
+    (TimeoutError("timed out"), llm.Unreachable),
+], ids=["HTTPError-401", "HTTPError-403", "HTTPError-429", "HTTPError-529", "HTTPError-500", "HTTPError-404",
+        "URLError", "TimeoutError"])
+def test_anthropic_failures_are_told_apart_without_the_key(stub_urlopen, api_key, error, kind):
     stub_urlopen(error=error)
     with pytest.raises(llm.Unreachable) as raised:
         llm.responder("anthropic").reply(FRUIT)
-    assert "test-key" not in str(raised.value)
+    assert type(raised.value) is kind
+    assert "test-key" not in "".join(traceback.format_exception(raised.value))
 
 
 def test_anthropic_strips_the_line_break_around_the_key(stub_urlopen, monkeypatch):

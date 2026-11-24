@@ -3,6 +3,7 @@
 import http.client
 import json
 import os
+import urllib.error
 import urllib.request
 from collections.abc import Sequence
 from typing import Literal, Protocol, TypedDict
@@ -24,9 +25,17 @@ class Unreachable(Exception):
     """AI に繋がらない。"""
 
 
+class KeyRejected(Unreachable):
+    """AI が鍵を受け付けない (401・403)。待っても直らない。"""
+
+
+class Busy(Unreachable):
+    """AI が混んでいる (429・529)。少し待って送り直せば送れる。"""
+
+
 class Responder(Protocol):
     def reply(self, messages: Sequence[Message]) -> str:
-        """古い順のメッセージ全体を受け取り、応答の全文を返す。繋がらなければ Unreachable を送出する。"""
+        """古い順のメッセージ全体を受け取り、応答の全文を返す。繋がらなければ Unreachable (またはその下位の型) を送出する。"""
 
     def reachable(self) -> bool: ...
 
@@ -67,7 +76,7 @@ class Anthropic:
 
 
 def call(method: str, path: str, timeout: float, body: object = None) -> bytes:
-    """2xx の応答の本文を返す。繋がらなければ Unreachable を送出する。"""
+    """2xx の応答の本文を返す。繋がらなければ Unreachable (またはその下位の型) を送出する。"""
     # 鍵は呼ぶたびに環境変数から読む。例外の文言には鍵を入れない。
     key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if not key:
@@ -85,9 +94,19 @@ def call(method: str, path: str, timeout: float, body: object = None) -> bytes:
         # http.client はヘッダに使えない文字 (改行、latin-1 の外の文字) を、鍵の全文入りの ValueError で拒む。
         # 鍵が traceback に出ないよう、元の例外はつながない。
         raise Unreachable("AI に繋がりません (ANTHROPIC_API_KEY にヘッダに使えない文字があります)") from None
-    except (OSError, http.client.HTTPException) as e:
+    except urllib.error.HTTPError as e:
         # urlopen は 2xx 以外を HTTPError (OSError の仲間) として送出する。
+        raise refusal(e.code) from e
+    except (OSError, http.client.HTTPException) as e:
         raise Unreachable(f"AI に繋がりません ({type(e).__name__}: {e})") from e
+
+
+def refusal(code: int) -> Unreachable:
+    if code in (401, 403):
+        return KeyRejected(f"AI が鍵を受け付けません (HTTP {code})")
+    if code in (429, 529):
+        return Busy(f"AI が混んでいます (HTTP {code})")
+    return Unreachable(f"AI に繋がりません (HTTP {code})")
 
 
 RESPONDERS: dict[str, Responder] = {"fake": Fake(), "fake-down": FakeDown(), "anthropic": Anthropic()}
