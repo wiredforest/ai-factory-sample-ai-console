@@ -309,6 +309,20 @@
         blocks.push(paragraph);
         continue;
       }
+      // 文の後ろで開くフェンス (`前置き ```python` など)。Markdown ではフェンスではないが、続く行を見出しにすると
+      // コードの # が消える。フェンスとみなしても、文字が書かれたまま出るだけで何も失わない。
+      const trailing = /(?:^|[^`~])(`{3,}|~{3,})[\w+#.-]*[ \t]*$/.exec(line);
+      if (trailing && !line.slice(0, trailing.index + 1).includes(trailing[1])) {
+        fence = trailing[1];
+        if (paragraph) {
+          paragraph.append(document.createElement("br"), line);
+        } else {
+          paragraph = document.createElement("p");
+          paragraph.append(line);
+          blocks.push(paragraph);
+        }
+        continue;
+      }
       const heading = /^(#{1,6})[ \t]+(\S.*)$/.exec(line);
       if (heading) {
         const element = document.createElement(`h${heading[1].length}`);
