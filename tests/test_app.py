@@ -80,7 +80,7 @@ def test_page_offers_deleting_a_conversation_after_confirming(start_app):
     assert re.search(r"if \(!window\.confirm\(.*?\)\) return;\n.*?method: \"DELETE\".*?if \(!response\.ok\) \{.*?\}\n.*?item\.remove\(\);", page, re.DOTALL)
     # 開いている会話が消えたら、会話の送受信が新しい会話を押したときと同じにする。
     assert 'new CustomEvent("conversation-deleted"' in page
-    assert "if (event.detail.conversationId === currentConversationId) newConversationButton.click();" in page
+    assert re.search(r"if \(event\.detail\.conversationId === currentConversationId\) \{\n.*?newConversationButton\.click\(\);", page, re.DOTALL)
     # 開いている途中の会話を消したら開かず、会話の送受信の待ちを開けなかったときと同じに解く (送信の結果が出ないままにしない)。
     assert re.search(r'if \(openingId === conversation\.id\) \{\n\s*openRequest\+\+;\n\s*document\.dispatchEvent\(new CustomEvent\("conversation-open-failed"\)\);', page)
 
@@ -186,7 +186,7 @@ def test_page_words_every_send_failure_through_the_same_table(start_app):
     page = start_app().get("/").body.decode("utf-8")
     # 会話の領域の表示・別の会話への知らせ・知らせからの送り直しの失敗は、どれも failureReason で文言を決める。
     assert "const message = failureReason(error);" in page
-    assert "if (await stillShown(view)) showUnsent(bubble, text, message);" in page
+    assert "if (await stillShown(view)) showUnsent(bubble, text, message, origin);" in page
     assert "else showUnsentElsewhere(origin, text, message);" in page
     assert "describe(failureReason(error));" in page
     # 理由ごとの文言を、表の外で API の理由から直に決めない。
