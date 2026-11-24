@@ -27,6 +27,9 @@ SEARCH_TOOL_BASIC = "web_search_20250305"
 SEARCH_TOOL_FILTERING = "web_search_20260209"
 FILTERING_SEARCH_MODELS = frozenset({"claude-sonnet-5-5", "claude-opus-5-5"})
 
+# 検索を使った応答の本文の後に置く出典の欄の見出し。欄の形は cited が決める。
+SOURCES_HEADING = "出典:"
+
 
 class Message(TypedDict):
     role: Literal["user", "assistant"]
@@ -95,10 +98,11 @@ class Anthropic:
         try:
             data = json.loads(answer)
             text = "".join(block["text"] for block in data["content"] if block["type"] == "text")
+            found = sources(data["content"])
             stop_reason = data.get("stop_reason")
-        except (ValueError, KeyError, TypeError) as e:
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
             raise Unreachable(f"AI に繋がりません (応答の形が想定外です: {type(e).__name__})") from e
-        return noted(text, stop_reason)
+        return noted(cited(text, found), stop_reason)
 
     def reachable(self) -> bool:
         try:
@@ -112,6 +116,44 @@ def search_tools(model: str) -> list[dict[str, object]]:
     """要求の tools に入れる、モデルに合った版の web search ツール 1 つだけの一覧。"""
     version = SEARCH_TOOL_FILTERING if model in FILTERING_SEARCH_MODELS else SEARCH_TOOL_BASIC
     return [{"type": version, "name": "web_search", "max_uses": SEARCH_MAX_USES}]
+
+
+def sources(content: list[dict[str, object]]) -> list[tuple[str, str]]:
+    """検索を使った応答の出典 (題名, URL) を、最初に現れた順に URL の重複なく返す。検索を使わなかった応答では空。
+
+    text のブロックの citations (web_search_result_location) を使い、1 つも無ければ web_search_tool_result の結果を使う。
+    """
+    results = [block for block in content if block["type"] == "web_search_tool_result"]
+    if not results:
+        return []
+    citations = [
+        citation
+        for block in content if block["type"] == "text"
+        for citation in block.get("citations") or []
+        if citation.get("type") == "web_search_result_location"
+    ]
+    # 検索が失敗した web_search_tool_result の content は一覧ではなく、エラーの 1 つのオブジェクトになる。
+    found = citations or [
+        result
+        for block in results if isinstance(block.get("content"), list)
+        for result in block["content"]
+        if result.get("type") == "web_search_result"
+    ]
+    seen: dict[str, str] = {}
+    for source in found:
+        url, title = source.get("url"), source.get("title")
+        if isinstance(url, str) and url.strip() and url.strip() not in seen:
+            # 題名の改行で 1 行 1 つの形が崩れないよう、空白をつめる。
+            seen[url.strip()] = " ".join(title.split()) if isinstance(title, str) else ""
+    return [(title, url) for url, title in seen.items()]
+
+
+def cited(text: str, found: Sequence[tuple[str, str]]) -> str:
+    """本文の後に空行を置き、出典の欄 (見出しと、1 行に 1 つの「- 題名 (URL)」か題名の無い「- URL」) を添える。出典が無ければ本文のまま。"""
+    if not found:
+        return text
+    lines = [f"- {title} ({url})" if title else f"- {url}" for title, url in found]
+    return "\n\n".join(part for part in (text, "\n".join([SOURCES_HEADING, *lines])) if part)
 
 
 def noted(text: str, stop_reason: object) -> str:
