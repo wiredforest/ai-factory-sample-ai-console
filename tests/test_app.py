@@ -161,6 +161,53 @@ def test_page_lets_the_send_result_update_the_llm_status(start_app):
     assert "setInterval" not in page
 
 
+def failure_reasons(page):
+    """ページの failureReasons の対応表を、理由ごとの文言として取り出す。"""
+    table = re.search(r"const failureReasons = \{(.*?)\n  \};", page, re.DOTALL)
+    assert table is not None
+    return dict(re.findall(r'^\s*(\w+): "([^"]*)",$', table.group(1), re.MULTILINE))
+
+
+def test_page_tells_the_send_failure_kinds_apart(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    reasons = failure_reasons(page)
+    assert set(reasons) == {"llm_key_rejected", "llm_busy", "llm_unavailable"}
+    assert reasons["llm_unavailable"] == "AI に繋がりません"
+    # 鍵を直すべきか、少し待って送り直すべきかが分かる。
+    assert "鍵" in reasons["llm_key_rejected"] and "正しくありません" in reasons["llm_key_rejected"]
+    assert "混んで" in reasons["llm_busy"] and "少し待って" in reasons["llm_busy"] and "送り直" in reasons["llm_busy"]
+    assert len(set(reasons.values())) == 3
+    # 鍵の文字列そのものは出さない。環境変数の名前だけを示す。
+    assert "sk-ant" not in page
+    assert "return failureReasons[error] ?? " in page
+
+
+def test_page_words_every_send_failure_through_the_same_table(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    # 会話の領域の表示・別の会話への知らせ・知らせからの送り直しの失敗は、どれも failureReason で文言を決める。
+    assert "const message = failureReason(error);" in page
+    assert "if (await stillShown(view)) showUnsent(bubble, text, message);" in page
+    assert "else showUnsentElsewhere(origin, text, message);" in page
+    assert "describe(failureReason(error));" in page
+    # サーバに届かないときも、同じ表の llm_unavailable の文言を使う。文言を直に書かない。
+    assert page.count('"AI に繋がりません"') == 1
+    assert 'showUnsent(bubble, text, failureReason("llm_unavailable"));' in page
+    assert 'showUnsentElsewhere(origin, text, failureReason("llm_unavailable"));' in page
+    assert 'describe(failureReason("llm_unavailable"));' in page
+
+
+def test_page_marks_the_llm_down_only_when_the_ai_was_not_reached(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    # 混んでいるときは AI に届いているので、「AI への接続」を異常にしない。
+    assert 'const llmUnreachedErrors = ["llm_unavailable", "llm_key_rejected"];' in page
+    assert (
+        'if (llmUnreachedErrors.includes(error)) document.dispatchEvent(new CustomEvent("llm-reached", { detail: { ok: false } }));'
+        in page
+    )
+    assert page.count('new CustomEvent("llm-reached", { detail: { ok: false } })') == 1
+    assert 'error === "llm_busy"' not in page
+
+
 def test_page_rechecks_the_status_on_return_and_tells_an_unreachable_server_apart(start_app):
     page = start_app().get("/").body.decode("utf-8")
     parser = TextById()

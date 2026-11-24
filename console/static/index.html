@@ -300,10 +300,19 @@
     }
   }
 
-  // 送れなかった理由の表示。
+  // 送れなかった理由の表示。API が返す理由ごとに、次に何をすればよいかが分かる文言にする。
+  const failureReasons = {
+    llm_key_rejected: "AI の鍵 (ANTHROPIC_API_KEY) が正しくありません。鍵を直してから送り直してください",
+    llm_busy: "AI が混んでいます。少し待ってから送り直してください",
+    llm_unavailable: "AI に繋がりません",
+  };
+
   function failureReason(error) {
-    return error === "llm_unavailable" ? "AI に繋がりません" : "送信できませんでした";
+    return failureReasons[error] ?? "送信できませんでした";
   }
+
+  // AI に届かなかった、または鍵を断られた理由。混んでいるときは AI に届いているので含めない。
+  const llmUnreachedErrors = ["llm_unavailable", "llm_key_rejected"];
 
   function showUnsent(bubble, text, message) {
     const notice = document.createElement("p");
@@ -355,7 +364,7 @@
             body: JSON.stringify({ conversation_id: origin.conversationId, text }),
           });
         } catch (error) {
-          describe("AI に繋がりません");
+          describe(failureReason("llm_unavailable"));
           throw error;
         }
         if (!response.ok) {
@@ -407,9 +416,9 @@
         });
       } catch (error) {
         // サーバに届かない。AI に繋がらないときと同じく、送った本文は記録されていない。
-        if (await stillShown(view)) showUnsent(bubble, text, "AI に繋がりません");
-        else if (reopened(origin)) showUnsent(addBubble("user", text), text, "AI に繋がりません");
-        else showUnsentElsewhere(origin, text, "AI に繋がりません");
+        if (await stillShown(view)) showUnsent(bubble, text, failureReason("llm_unavailable"));
+        else if (reopened(origin)) showUnsent(addBubble("user", text), text, failureReason("llm_unavailable"));
+        else showUnsentElsewhere(origin, text, failureReason("llm_unavailable"));
         throw error;
       }
       if (!response.ok) {
@@ -420,7 +429,7 @@
         else if (reopened(origin)) showUnsent(addBubble("user", text), text, message);
         else showUnsentElsewhere(origin, text, message);
         // AI に繋がらなかったことは、どの会話を出していてもサーバの状態に知らせる。
-        if (error === "llm_unavailable") document.dispatchEvent(new CustomEvent("llm-reached", { detail: { ok: false } }));
+        if (llmUnreachedErrors.includes(error)) document.dispatchEvent(new CustomEvent("llm-reached", { detail: { ok: false } }));
         throw new Error(`POST /api/messages: ${response.status} ${error}`);
       }
       const { conversation_id, messages } = await response.json();
