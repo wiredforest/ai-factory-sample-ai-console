@@ -20,21 +20,24 @@ FRUIT_FOLLOW_UP = [
 
 
 class FakeUrlopen:
-    """urllib.request.urlopen の差し替え。受け取った要求を記録し、決めた応答 (bytes ならそのまま、ほかは JSON) を返すか例外を送出する。"""
+    """urllib.request.urlopen の差し替え。受け取った要求を記録し、決めた応答 (bytes ならそのまま、ほかは JSON) を返すか例外を送出する。
 
-    def __init__(self, answer: object = None, error: Exception | None = None) -> None:
-        self.answer = answer
-        self.error = error
+    answers を渡すと、呼ばれるたびにその順で応答を返す (例外なら送出する)。尽きたら最初からくり返す。
+    """
+
+    def __init__(self, answer: object = None, error: Exception | None = None, answers: list[object] | None = None) -> None:
+        self.answers = answers if answers is not None else [error if error is not None else answer]
         self.calls: list[tuple[urllib.request.Request, float]] = []
 
     def __call__(self, request: urllib.request.Request, timeout: float) -> io.BytesIO:
         put_headers(request)
         self.calls.append((request, timeout))
-        if self.error is not None:
-            raise self.error
-        if isinstance(self.answer, bytes):
-            return io.BytesIO(self.answer)
-        return io.BytesIO(json.dumps(self.answer).encode("utf-8"))
+        answer = self.answers[(len(self.calls) - 1) % len(self.answers)]
+        if isinstance(answer, Exception):
+            raise answer
+        if isinstance(answer, bytes):
+            return io.BytesIO(answer)
+        return io.BytesIO(json.dumps(answer).encode("utf-8"))
 
 
 def put_headers(request: urllib.request.Request) -> None:
@@ -490,3 +493,103 @@ def test_a_searched_reply_is_recorded_with_its_sources_and_sent_back_as_is(stub_
         chat.send(db, responder("anthropic"), {"conversation_id": first["conversation_id"], "text": "ほかには"})
     after = json.loads(fake.calls[-1][0].data)
     assert after["messages"][1] == {"role": "assistant", "content": CITED_REPLY}
+
+
+PAUSED = {"stop_reason": "pause_turn", "content": [
+    {"type": "text", "text": "前半"},
+    {"type": "server_tool_use", "id": "srvtoolu_01", "name": "web_search", "input": {"query": "びわ"}},
+]}
+FINISHED = {"stop_reason": "end_turn", "content": [{"type": "text", "text": "後半"}]}
+
+
+def posted(fake: FakeUrlopen) -> list[dict]:
+    assert all(request.get_method() == "POST" and request.full_url.endswith("/messages") for request, _ in fake.calls)
+    return [json.loads(request.data) for request, _ in fake.calls]
+
+
+def test_a_paused_reply_is_continued_with_its_content_and_the_same_request(stub_urlopen, api_key):
+    fake = stub_urlopen(answers=[PAUSED, FINISHED])
+    reply = responder("anthropic").reply(FRUIT_FOLLOW_UP)
+    first, second = posted(fake)
+    assert first["messages"] == FRUIT_FOLLOW_UP
+    assert second["messages"] == [*FRUIT_FOLLOW_UP, {"role": "assistant", "content": PAUSED["content"]}]
+    for key in ("model", "system", "tools", "max_tokens"):
+        assert second[key] == first[key]
+    assert reply == "前半後半"
+    assert llm.UNFINISHED_NOTE not in reply
+
+
+def test_a_reply_still_paused_after_two_continues_says_it_is_unfinished(stub_urlopen, api_key):
+    fake = stub_urlopen(answers=[PAUSED])
+    reply = responder("anthropic").reply(FRUIT)
+    first, second, third = posted(fake)
+    assert first["messages"] == FRUIT
+    assert second["messages"] == [*FRUIT, {"role": "assistant", "content": PAUSED["content"]}]
+    assert third["messages"] == [*second["messages"], {"role": "assistant", "content": PAUSED["content"]}]
+    assert reply == "前半前半前半\n\n" + llm.UNFINISHED_NOTE
+
+
+def test_the_unfinished_note_is_its_own_sentence():
+    assert llm.UNFINISHED_NOTE.strip() and "\n" not in llm.UNFINISHED_NOTE
+    assert llm.UNFINISHED_NOTE not in (llm.TRUNCATED_NOTE, llm.REFUSED_NOTE)
+
+
+@pytest.mark.parametrize("answer", [FINISHED, {"stop_reason": "max_tokens", "content": [{"type": "text", "text": "途中"}]}],
+                         ids=["end_turn", "max_tokens"])
+def test_a_reply_that_did_not_pause_is_posted_once(stub_urlopen, api_key, answer):
+    fake = stub_urlopen(answer=answer)
+    responder("anthropic").reply(FRUIT)
+    assert len(posted(fake)) == 1
+
+
+@pytest.mark.parametrize(("error", "kind"), [
+    (http_error(429), llm.Busy),
+    (http_error(401), llm.KeyRejected),
+    (TimeoutError("timed out"), llm.Unreachable),
+], ids=["HTTPError-429", "HTTPError-401", "TimeoutError"])
+def test_a_failed_continue_fails_the_send_like_the_first_post(stub_urlopen, api_key, error, kind):
+    fake = stub_urlopen(answers=[PAUSED, error])
+    with pytest.raises(llm.Unreachable) as raised:
+        responder("anthropic").reply(FRUIT)
+    assert type(raised.value) is kind
+    assert len(fake.calls) == 2
+    assert "LEAKCHECK" not in "".join(traceback.format_exception(raised.value))
+
+
+def test_a_continue_of_an_unexpected_shape_becomes_unreachable(stub_urlopen, api_key):
+    stub_urlopen(answers=[PAUSED, {"content": None}])
+    with pytest.raises(llm.Unreachable):
+        responder("anthropic").reply(FRUIT)
+
+
+def test_the_sources_and_the_note_follow_the_text_of_every_part(stub_urlopen, api_key):
+    stub_urlopen(answers=[
+        {"stop_reason": "pause_turn", "content": searched({"type": "text", "text": "びわの旬は"})["content"]},
+        {"stop_reason": "max_tokens", "content": [
+            {"type": "text", "text": "初夏です", "citations": [location("https://a.example/1", "A")]},
+        ]},
+    ])
+    assert responder("anthropic").reply(FRUIT) == (
+        "びわの旬は初夏です\n\n出典:\n- A (https://a.example/1)\n\n" + llm.TRUNCATED_NOTE
+    )
+
+
+def test_a_continued_reply_is_recorded_as_one_exchange_and_sent_back_as_is(stub_urlopen, api_key):
+    fake = stub_urlopen(answers=[PAUSED, FINISHED])
+    path = config.load().db_path
+    with Database(path) as db:
+        first = chat.send(db, responder("anthropic"), {"conversation_id": None, "text": FRUIT[0]["content"]})
+        assert first["messages"][-1] == {"role": "assistant", "text": "前半後半"}
+    with Database(path) as db:
+        assert len(db.list_conversations()) == 1
+        assert [(m.role, m.content) for m in db.conversation(first["conversation_id"]).messages] == [
+            ("user", FRUIT[0]["content"]),
+            ("assistant", "前半後半"),
+        ]
+        fake.answers = [FINISHED]
+        chat.send(db, responder("anthropic"), {"conversation_id": first["conversation_id"], "text": "ほかには"})
+    assert posted(fake)[-1]["messages"] == [
+        {"role": "user", "content": FRUIT[0]["content"]},
+        {"role": "assistant", "content": "前半後半"},
+        {"role": "user", "content": "ほかには"},
+    ]
