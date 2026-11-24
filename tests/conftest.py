@@ -62,6 +62,9 @@ class RunningApp:
         """リダイレクトを辿らずに GET する。"""
         return self.request("GET", path)
 
+    def delete(self, path: str) -> Response:
+        return self.request("DELETE", path)
+
     def post_json(self, path: str, value: object) -> Response:
         body = json.dumps(value, ensure_ascii=False).encode("utf-8")
         return self.request("POST", path, body, {"Content-Type": "application/json"})

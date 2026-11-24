@@ -36,7 +36,7 @@ def test_messages_survive_closing_and_reopening(db_path):
         db.add_message(conversation, "assistant", "fake reply #1: りんごの話")
     with Database(str(db_path)) as db:
         assert len(db.list_conversations()) == 1
-        assert [(m.role, m.content) for m in db.messages(conversation)] == [
+        assert [(m.role, m.content) for m in db.conversation(conversation).messages] == [
             ("user", "りんごの話"),
             ("assistant", "fake reply #1: りんごの話"),
         ]
@@ -66,7 +66,7 @@ def test_list_carries_id_update_time_and_first_user_message(db):
     db.add_message(a, "user", "ほかの話")
     [summary] = db.list_conversations()
     assert summary.id == a
-    assert summary.updated_at == db.messages(a)[-1].created_at
+    assert summary.updated_at == db.conversation(a).messages[-1].created_at
     assert summary.updated_at.endswith("+00:00")
     assert summary.first_user_message == "りんごの話"
 
@@ -77,7 +77,7 @@ def test_messages_of_one_conversation_do_not_include_another(db):
     db.add_message(a, "user", "りんごの話")
     db.add_message(b, "user", "みかんの話")
     db.add_message(a, "assistant", "fake reply #1: りんごの話")
-    assert [m.content for m in db.messages(a)] == ["りんごの話", "fake reply #1: りんごの話"]
+    assert [m.content for m in db.conversation(a).messages] == ["りんごの話", "fake reply #1: りんごの話"]
 
 
 def test_unknown_role_is_refused_and_adds_nothing(db):
@@ -86,7 +86,7 @@ def test_unknown_role_is_refused_and_adds_nothing(db):
     before = db.list_conversations()
     with pytest.raises(sqlite3.IntegrityError):
         db.add_message(conversation, "system", "ふるまいを変えて")
-    assert [m.content for m in db.messages(conversation)] == ["りんごの話"]
+    assert [m.content for m in db.conversation(conversation).messages] == ["りんごの話"]
     assert db.list_conversations() == before
 
 
@@ -106,7 +106,7 @@ def test_two_threads_adding_to_one_conversation_lose_nothing(db):
     with ThreadPoolExecutor(max_workers=2) as pool:
         for future in [pool.submit(add_twenty, name) for name in ("a", "b")]:
             future.result(timeout=30)
-    assert len(db.messages(conversation)) == 40
+    assert len(db.conversation(conversation).messages) == 40
 
 
 def test_only_the_database_file_and_its_sqlite_companions_are_written(tmp_path, db_path):
@@ -115,7 +115,7 @@ def test_only_the_database_file_and_its_sqlite_companions_are_written(tmp_path, 
         db.add_message(conversation, "user", "りんごの話")
         db.add_message(conversation, "assistant", "fake reply #1: りんごの話")
         db.list_conversations()
-        db.messages(conversation)
+        db.conversation(conversation)
     allowed = {db_path.name} | {db_path.name + suffix for suffix in ("-wal", "-shm", "-journal")}
     assert {p.name for p in tmp_path.iterdir()} <= allowed
 
@@ -124,7 +124,7 @@ def test_only_the_database_file_and_its_sqlite_companions_are_written(tmp_path, 
 def test_exchange_without_a_conversation_starts_one_with_both_messages_in_order(db):
     conversation = db.add_exchange(None, "りんごの話", "fake reply #1: りんごの話")
     assert [c.id for c in db.list_conversations()] == [conversation]
-    assert [(m.role, m.content) for m in db.messages(conversation)] == [
+    assert [(m.role, m.content) for m in db.conversation(conversation).messages] == [
         ("user", "りんごの話"),
         ("assistant", "fake reply #1: りんごの話"),
     ]
@@ -133,28 +133,38 @@ def test_exchange_without_a_conversation_starts_one_with_both_messages_in_order(
 def test_exchange_joins_an_existing_conversation_and_moves_it_up(db):
     a = db.add_exchange(None, "りんごの話", "fake reply #1: りんごの話")
     b = db.add_exchange(None, "みかんの話", "fake reply #1: みかんの話")
-    assert db.add_exchange(a, "続きです", "fake reply #2: 続きです") == a
+    assert db.add_exchange(db.conversation(a), "続きです", "fake reply #2: 続きです") == a
     assert [c.id for c in db.list_conversations()] == [a, b]
-    assert len(db.messages(a)) == 4
+    assert len(db.conversation(a).messages) == 4
 
 
-def test_exchange_to_a_missing_conversation_is_refused_and_adds_nothing(db):
-    with pytest.raises(sqlite3.IntegrityError):
-        db.add_exchange(999, "りんごの話", "fake reply #1: りんごの話")
+def test_exchange_to_a_deleted_conversation_is_refused_and_adds_nothing(db):
+    a = db.conversation(db.add_exchange(None, "りんごの話", "fake reply #1: りんごの話"))
+    db.delete_conversation(a.id)
+    assert db.add_exchange(a, "続きです", "fake reply #2: 続きです") is None
     assert db.list_conversations() == []
 
 
-def test_has_conversation(db):
+def test_exchange_to_a_deleted_conversation_whose_id_was_reused_is_refused_and_adds_nothing(db):
+    a = db.conversation(db.add_exchange(None, "りんごの話", "fake reply #1: りんごの話"))
+    db.delete_conversation(a.id)
+    b = db.add_exchange(None, "みかんの話", "fake reply #1: みかんの話")
+    assert b == a.id
+    assert db.add_exchange(a, "続きです", "fake reply #2: 続きです") is None
+    assert [m.content for m in db.conversation(b).messages] == ["みかんの話", "fake reply #1: みかんの話"]
+
+
+def test_a_missing_conversation_is_none_not_empty(db):
     conversation = db.create_conversation()
-    assert db.has_conversation(conversation)
-    assert not db.has_conversation(conversation + 1)
+    assert db.conversation(conversation).messages == []
+    assert db.conversation(conversation + 1) is None
 
 
 def test_check_is_true_and_leaves_the_record_unchanged(db, db_path):
     conversation = db.add_exchange(None, "りんごの話", "fake reply #1: りんごの話")
-    before = (db.list_conversations(), db.messages(conversation))
+    before = (db.list_conversations(), db.conversation(conversation).messages)
     assert console.db.check(str(db_path))
-    assert (db.list_conversations(), db.messages(conversation)) == before
+    assert (db.list_conversations(), db.conversation(conversation).messages) == before
 
 
 def test_check_is_false_without_creating_a_missing_directory_or_file(tmp_path):

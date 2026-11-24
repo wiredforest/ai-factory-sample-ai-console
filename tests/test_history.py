@@ -1,6 +1,8 @@
 import json
 import os
 import re
+import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -46,7 +48,7 @@ def test_each_conversation_carries_id_title_and_iso_update_time(start_app, db):
     db.add_message(a, "assistant", "fake reply #1: りんごの話")
     db.add_message(a, "user", "ほかの話")
     [conversation] = conversations(start_app())
-    assert conversation == {"id": a, "title": "りんごの話", "updated_at": db.messages(a)[-1].created_at}
+    assert conversation == {"id": a, "title": "りんごの話", "updated_at": db.conversation(a).messages[-1].created_at}
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}\+00:00", conversation["updated_at"])
 
 
@@ -103,7 +105,7 @@ def test_opening_a_conversation_returns_only_its_messages_in_order(start_app, db
     messages = opened(app, a)
     assert roles_and_texts(messages) == [("user", "りんごの話"), ("assistant", "fake reply #1: りんごの話")]
     assert "みかん" not in json.dumps(messages, ensure_ascii=False)
-    assert [m["created_at"] for m in messages] == [m.created_at for m in db.messages(a)]
+    assert [m["created_at"] for m in messages] == [m.created_at for m in db.conversation(a).messages]
     assert roles_and_texts(opened(app, b)) == [("user", "みかんの話"), ("assistant", "fake reply #1: みかんの話")]
 
 
@@ -147,6 +149,60 @@ def test_unknown_or_non_integer_ids_are_not_found(start_app, raw_id):
 def test_opening_without_the_record_is_unavailable(start_app, tmp_path):
     app = start_app(CONSOLE_DB_PATH=str(tmp_path / "missing" / "console.sqlite3"))
     r = app.get("/api/conversations/1")
+    assert r.status == 503
+    assert json.loads(r.body)["error"] == "db_unavailable"
+
+
+def row_counts() -> tuple[int, int]:
+    with closing(sqlite3.connect(os.environ["CONSOLE_DB_PATH"])) as conn:
+        return conn.execute("SELECT (SELECT count(*) FROM conversations), (SELECT count(*) FROM messages)").fetchone()
+
+
+def test_deleting_a_conversation_removes_it_and_its_messages_and_leaves_the_others(start_app):
+    app = start_app()
+    a = send(app, None, "りんごの話")["conversation_id"]
+    b = send(app, None, "みかんの話")["conversation_id"]
+    kept = opened(app, b)
+    r = app.delete(f"/api/conversations/{a}")
+    assert r.status == 200
+    assert r.headers["Content-Type"] == "application/json; charset=utf-8"
+    assert json.loads(r.body) == {"id": a}
+    assert [(c["id"], c["title"]) for c in conversations(app)] == [(b, "みかんの話")]
+    assert app.get(f"/api/conversations/{a}").status == 404
+    assert opened(app, b) == kept
+    with Database(os.environ["CONSOLE_DB_PATH"]) as reopened:
+        assert reopened.conversation(a) is None
+        assert [c.id for c in reopened.list_conversations()] == [b]
+
+
+@pytest.mark.parametrize("raw_id", ["999", "0", "01", "abc"])
+def test_deleting_an_unknown_or_non_integer_id_is_not_found_and_deletes_nothing(start_app, raw_id):
+    app = start_app()
+    send(app, None, "りんごの話")
+    before = row_counts()
+    r = app.delete(f"/api/conversations/{raw_id}")
+    assert r.status == 404
+    assert json.loads(r.body) == {"error": "conversation_not_found"}
+    assert row_counts() == before
+
+
+def test_deleting_from_a_read_only_record_fails_and_keeps_the_conversation(start_app, db):
+    conversation = start_conversation(db, "りんごの話")
+    db.add_message(conversation, "assistant", "fake reply #1: りんごの話")
+    os.chmod(os.environ["CONSOLE_DB_PATH"], 0o444)
+    app = start_app()
+    r = app.delete(f"/api/conversations/{conversation}")
+    assert r.status == 503
+    assert json.loads(r.body) == {"error": "db_write_failed", "message": "会話を削除できませんでした"}
+    assert [c["id"] for c in conversations(app)] == [conversation]
+    assert len(opened(app, conversation)) == 2
+    # 無い会話は、書けない記録でも「無い」と答える。
+    assert app.delete("/api/conversations/999").status == 404
+
+
+def test_deleting_without_the_record_is_unavailable(start_app, tmp_path):
+    app = start_app(CONSOLE_DB_PATH=str(tmp_path / "missing" / "console.sqlite3"))
+    r = app.delete("/api/conversations/1")
     assert r.status == 503
     assert json.loads(r.body)["error"] == "db_unavailable"
 
