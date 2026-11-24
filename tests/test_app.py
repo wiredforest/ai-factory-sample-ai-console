@@ -256,3 +256,39 @@ def test_page_never_injects_text_as_html_nor_loads_anything_from_outside(start_a
     for loader in ("<script src", "<link", "@import"):
         assert loader not in page
     assert not re.search(r"\b(?:src|href)\s*=\s*[\"'`]?https?://", page, re.IGNORECASE)
+
+
+def test_page_shows_code_blocks_as_uninterpreted_monospace_text_inside_the_bubble(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    # 閉じたフェンスは pre の中の code になり、中身は解釈せずに文字のまま入る。言語は data-lang に持たせる。
+    assert 'document.createElement("pre")' in page
+    assert 'document.createElement("code")' in page
+    assert "code.dataset.lang = fence.lang" in page
+    assert 'code.textContent = fence.lines.map((line) => line.replace(indent, "")).join("\\n");' in page
+    # 閉じないまま終わったフェンスは、開きの行から終わりまでを書かれたままの段落にして、文字を失わない。
+    assert "paragraph.append(fence.line);" in page
+    # 等幅で吹き出しと違う背景に出し、長い行は吹き出しからはみ出させずに横に送る。Markdown の原文は色を変える。
+    rule = re.search(r"\.bubble \.text pre \{([^}]*)\}", page)
+    assert rule
+    assert "monospace" in rule[1]
+    assert "white-space: pre;" in rule[1]
+    assert "overflow-x: auto;" in rule[1]
+    assert "background:" in rule[1]
+    assert re.search(r"\.bubble \.text pre\.markdown \{[^}]*background:", page)
+
+
+def test_page_keeps_the_text_after_the_fence_language_visible_above_the_code_block(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    # 開きのフェンスの行 (```js title="a.js" 注記) の、言語の語の後ろの文字も吹き出しから消さない。
+    # 言語は情報の最初の語で、それより後ろがあれば、情報を書かれたまま文字としてブロックの上に出す。
+    assert "const info = opening[3].trim();" in page
+    assert "info, lang: info.split(/\\s+/)[0]," in page
+    assert "if (fence.info !== fence.lang) {" in page
+    assert 'info.className = "code-info";' in page
+    assert "info.textContent = fence.info;" in page
+    assert page.index("blocks.push(info);") < page.index("blocks.push(codeBlock(fence));")
+    # 画面に見えるように出す (隠さない)。
+    rule = re.search(r"\.bubble \.text \.code-info \{([^}]*)\}", page)
+    assert rule
+    assert "display: none" not in rule[1]
+    assert "visibility" not in rule[1]

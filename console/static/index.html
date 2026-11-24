@@ -51,6 +51,11 @@
   .bubble .text h1 { font-size: 1.5em; }
   .bubble .text h2 { font-size: 1.3em; }
   .bubble .text h3 { font-size: 1.15em; }
+  .bubble .text pre { padding: 0.5rem 0.75rem; border-radius: 0.375rem; background: #f3f4f6; color: #1f2328; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.875em; white-space: pre; overflow-wrap: normal; overflow-x: auto; }
+  .bubble .text pre.markdown { background: #fdf6e3; color: #5c4400; }
+  .bubble .text pre code { font: inherit; }
+  .bubble .text .code-info { color: #57606a; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8em; }
+  .bubble .text .code-info + pre { margin-top: 0.25em; }
   .bubble.user { align-self: flex-end; background: #d7ecff; }
   .bubble.assistant { align-self: flex-start; background: #fff; border: 1px solid #ddd; }
   #messages .error { align-self: flex-end; margin: 0; color: #c62828; font-weight: bold; }
@@ -286,37 +291,54 @@
   }
 
   // AI の応答の原文を Markdown のブロックとして読み、吹き出しの本文に並べる要素を返す。記録は原文のままで、出すたびにここで組み立てる。
-  // 解釈するのは見出しと段落 (段落の中の改行は br) だけ。ほかの書式や HTML のタグは、書かれたままの文字として段落に入れる。
-  // コードのフェンス (``` や ~~~) から閉じるフェンスまでは解釈せず、フェンスの行も空行も含めて書かれたままの 1 つの段落にする。
+  // 解釈するのは見出しと段落 (段落の中の改行は br) とコードブロックだけ。ほかの書式や HTML のタグは、書かれたままの文字として段落に入れる。
+  // 行頭のフェンス (``` や ~~~) から閉じるフェンスまではコードブロック (pre の中の code) にし、中身は解釈せずに文字のまま入れる。
+  // 閉じないまま応答が終わったら、開きのフェンスの行から終わりまでを書かれたままの 1 つの段落にする。
   function markdownBlocks(text) {
     const blocks = [];
     // 今の段落。空行と見出しとフェンスで閉じる。
     let paragraph = null;
-    // 開いているフェンスの記号の並び (```` ``` ```` など)。閉じるまで、または応答の終わりまで続く。
+    // 開いているフェンス。記号の並び (```` ``` ```` など) と、コードブロックなら開きの行・字下げ・情報 (フェンスの後の文字)・言語 (その最初の語)・中身の行を持つ。
+    // 閉じるまで、または応答の終わりまで続く。
     let fence = null;
     for (const line of text.split(/\r?\n/)) {
       if (fence) {
-        paragraph.append(document.createElement("br"), line);
         const closing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
-        if (closing && closing[1][0] === fence[0] && closing[1].length >= fence.length) {
+        const closes = closing && closing[1][0] === fence.marker[0] && closing[1].length >= fence.marker.length;
+        if (fence.lines) {
+          if (closes) {
+            // 言語の語の後ろに書かれた文字 (`title="a.js"` など) は解釈しないが、失わないようにブロックの上に書かれたまま出す。
+            if (fence.info !== fence.lang) {
+              const info = document.createElement("p");
+              info.className = "code-info";
+              info.textContent = fence.info;
+              blocks.push(info);
+            }
+            blocks.push(codeBlock(fence));
+          } else {
+            fence.lines.push(line);
+          }
+        } else {
+          paragraph.append(document.createElement("br"), line);
+        }
+        if (closes) {
           fence = null;
           paragraph = null;
         }
         continue;
       }
-      const opening = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
-      if (opening && !(opening[1][0] === "`" && opening[2].includes("`"))) {
-        fence = opening[1];
-        paragraph = document.createElement("p");
-        paragraph.append(line);
-        blocks.push(paragraph);
+      const opening = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line);
+      if (opening && !(opening[2][0] === "`" && opening[3].includes("`"))) {
+        const info = opening[3].trim();
+        fence = { marker: opening[2], line, indent: opening[1].length, info, lang: info.split(/\s+/)[0], lines: [] };
+        paragraph = null;
         continue;
       }
       // 文の後ろで開くフェンス (`前置き ```python` など)。Markdown ではフェンスではないが、続く行を見出しにすると
       // コードの # が消える。フェンスとみなしても、文字が書かれたまま出るだけで何も失わない。
       const trailing = /(?:^|[^`~])(`{3,}|~{3,})[\w+#.-]*[ \t]*$/.exec(line);
       if (trailing && !line.slice(0, trailing.index + 1).includes(trailing[1])) {
-        fence = trailing[1];
+        fence = { marker: trailing[1] };
         if (paragraph) {
           paragraph.append(document.createElement("br"), line);
         } else {
@@ -342,7 +364,28 @@
         blocks.push(paragraph);
       }
     }
+    // 閉じていないコードブロックは解釈せず、文字を失わないように書かれたまま出す。
+    if (fence?.lines) {
+      paragraph = document.createElement("p");
+      paragraph.append(fence.line);
+      for (const line of fence.lines) paragraph.append(document.createElement("br"), line);
+      blocks.push(paragraph);
+    }
     return blocks;
+  }
+
+  // 閉じたフェンスの中身を、字下げと改行を保ったコードブロックにする。言語はまだどれも色分けしない。
+  function codeBlock(fence) {
+    const pre = document.createElement("pre");
+    const code = document.createElement("code");
+    if (fence.lang) code.dataset.lang = fence.lang;
+    // Markdown の原文は、ほかのコードと見分けがつくように色を変える (中身は解釈しない)。
+    if (["markdown", "md"].includes(fence.lang.toLowerCase())) pre.className = "markdown";
+    // 開きのフェンスの字下げの分だけ、中身の行の頭の空白を外す (CommonMark と同じ)。
+    const indent = new RegExp(`^ {0,${fence.indent}}`);
+    code.textContent = fence.lines.map((line) => line.replace(indent, "")).join("\n");
+    pre.append(code);
+    return pre;
   }
 
   function addBubble(role, text) {
