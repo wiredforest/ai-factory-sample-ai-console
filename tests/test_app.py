@@ -199,3 +199,15 @@ def test_failures_sent_from_another_conversation_are_shown_outside_the_chat_area
     assert "send-failures" in parser.ancestors
     assert "chat" not in parser.ancestors["send-failures"]
     assert "send-failures" not in parser.ancestors["messages"]
+
+
+def test_page_never_injects_text_as_html_nor_loads_anything_from_outside(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    # AI の応答は記録の原文のまま届く。HTML として差し込むと、応答に書かれたタグやスクリプトが動く。
+    for api in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "DOMParser", "createContextualFragment"):
+        assert api not in page
+    assert not {"a", "img", "script", "iframe"} & set(re.findall(r"createElement\([\"'`](\w+)", page))
+    # 外部のライブラリ・スクリプト・スタイル・フォントを読み込まない。
+    for loader in ("<script src", "<link", "@import"):
+        assert loader not in page
+    assert not re.search(r"\b(?:src|href)\s*=\s*[\"'`]?https?://", page, re.IGNORECASE)
