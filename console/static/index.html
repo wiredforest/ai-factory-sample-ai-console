@@ -390,6 +390,13 @@
   // AI に届かなかった、または鍵を断られた理由。混んでいるときは AI に届いているので含めない。
   const llmUnreachedErrors = ["llm_unavailable", "llm_key_rejected"];
 
+  // 送った結果を、どの会話を出していても状態のメニューの「AI への接続」に知らせる。通常の送信も、送れなかった知らせからの送り直しもここを通す。
+  // 応答が返ったら正常、AI に届かずに (または鍵を断られて) 断られたら異常。それ以外の断り (混んでいる、元の会話が無いなど) では変えない。サーバに届かないときは呼ばない。
+  function reportSent(ok, error) {
+    if (ok) document.dispatchEvent(new CustomEvent("llm-reached", { detail: { ok: true } }));
+    else if (llmUnreachedErrors.includes(error)) document.dispatchEvent(new CustomEvent("llm-reached", { detail: { ok: false } }));
+  }
+
   function showUnsent(bubble, text, message, origin) {
     const notice = document.createElement("p");
     notice.className = "error";
@@ -458,6 +465,7 @@
           // 元の会話が無くなっていても (conversation_not_found)、ほかの会話へは送らずに知らせに残す。
           const error = await errorOf(response);
           describe(failureReason(error));
+          reportSent(false, error);
           throw new Error(`POST /api/messages: ${response.status} ${error}`);
         }
         const { conversation_id, messages } = await response.json();
@@ -466,6 +474,7 @@
         const shown = view === chatView && origin.conversationId !== null && origin.conversationId === currentConversationId;
         if (shown) for (const message of messages) addBubble(message.role, message.text);
         document.dispatchEvent(new CustomEvent("conversation-updated", { detail: { conversationId: conversation_id, shown } }));
+        reportSent(true);
       } finally {
         resend.disabled = false;
       }
@@ -517,7 +526,7 @@
         else if (reopened(origin)) showUnsent(addBubble("user", text), text, message, origin);
         else showUnsentElsewhere(origin, text, message);
         // AI に繋がらなかったことは、どの会話を出していてもサーバの状態に知らせる。
-        if (llmUnreachedErrors.includes(error)) document.dispatchEvent(new CustomEvent("llm-reached", { detail: { ok: false } }));
+        reportSent(false, error);
         throw new Error(`POST /api/messages: ${response.status} ${error}`);
       }
       const { conversation_id, messages } = await response.json();
@@ -529,7 +538,7 @@
         currentConversationId = conversation_id;
       }
       document.dispatchEvent(new CustomEvent("conversation-updated", { detail: { conversationId: conversation_id, shown } }));
-      document.dispatchEvent(new CustomEvent("llm-reached", { detail: { ok: true } }));
+      reportSent(true);
     } finally {
       sendButton.disabled = false;
       composerText.focus();
