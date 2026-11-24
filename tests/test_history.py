@@ -221,6 +221,24 @@ def test_page_opens_the_selected_conversation_in_the_chat_area(start_app):
     assert "currentConversationId = conversationId;" in body
 
 
+def test_a_send_result_waits_until_the_conversation_chosen_from_the_history_has_opened(start_app):
+    # 履歴でクリックしてから開き終わるまでに送信の失敗が返っても、送った会話のものとして入力欄に戻さない (#42)。
+    page = start_app().get("/").body.decode("utf-8")
+    opening = re.search(r"async function openConversation\(conversationId\) \{\n(.*?)\n  \}\n", page, re.DOTALL).group(1)
+    # クリックした時点で、GET より前に知らせる。
+    assert opening.index('new CustomEvent("conversation-opening")') < opening.index("await fetch(")
+    # 開けなかったら、最後に選んだ会話のときだけ待ちを解く。
+    assert re.search(r'catch \(error\) \{.*?if \(request === openRequest\) document\.dispatchEvent\(new CustomEvent\("conversation-open-failed"\)\);', opening, re.DOTALL)
+    assert 'document.addEventListener("conversation-opening", () => {' in page
+    assert 'document.addEventListener("conversation-open-failed", settleOpening);' in page
+    # 送信の結果は、開いている途中ならその結果が分かるまで待ってから、出し先を決める。
+    still_shown = re.search(r"async function stillShown\(view\) \{\n(.*?)\n  \}\n", page, re.DOTALL).group(1)
+    assert still_shown.index("while (opening) await opening.promise;") < still_shown.index("return view === chatView;")
+    # 開き終わったら、会話の領域を替えたと記録してから待ちを解く。待っていた結果は、開いた会話には出ない。
+    opened = re.search(r'document\.addEventListener\("conversation-opened", \(event\) => \{(.*?)\n  \}\);', page, re.DOTALL).group(1)
+    assert opened.index("chatView++;") < opened.index("settleOpening();")
+
+
 def history_section(page: str) -> str:
     return re.search(r'<section id="history">.*?</section>', page, re.DOTALL).group(0)
 

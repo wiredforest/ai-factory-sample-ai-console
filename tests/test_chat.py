@@ -258,10 +258,13 @@ def test_page_has_a_new_conversation_button_that_only_clears_the_view(start_app)
     assert "currentHistoryId = null;" in listened.group(1)
     assert "markCurrent();" in listened.group(1)
     # 送信中に新しい会話にしたら、前の会話の応答で今の会話を上書きしない。
-    assert re.search(r"const shown = view === chatView;\n      if \(shown\) \{\n.*?currentConversationId = conversation_id;\n      \}", page, re.DOTALL)
+    assert re.search(r"const shown = await stillShown\(view\);\n      if \(shown\) \{\n.*?currentConversationId = conversation_id;\n      \}", page, re.DOTALL)
+    assert "return view === chatView;" in page
     # 送れなかった表示も消え、送信中に新しい会話にしたら、前の会話の送れなかった表示と本文を持ち込まない。
     assert "unsent = [];" in body
-    assert page.count("if (view === chatView) showUnsent(") == 2
+    assert page.count("if (await stillShown(view)) showUnsent(") == 2
+    # 会話を開いている途中に新しい会話にしたら、開くのを待っている送信の結果も、新しい会話には出さない。
+    assert body.index("chatView++;") < body.index("settleOpening();")
 
 
 def test_page_says_when_the_ai_is_unreachable_and_puts_the_text_back(start_app):
