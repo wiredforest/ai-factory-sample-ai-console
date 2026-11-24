@@ -35,6 +35,9 @@ FILTERING_SEARCH_MODELS = frozenset({"claude-sonnet-5-5", "claude-opus-5-5"})
 # 検索を使った応答の本文の後に置く出典の欄の見出し。欄の形は cited が決める。
 SOURCES_HEADING = "出典:"
 
+# 検索の結果がエラーだった応答の本文の後に、本文が伝えるかどうかに関わらず 1 回だけ添える一文。
+SEARCH_FAILED_NOTE = "[Web の検索に失敗したため、この応答は検索の結果に基づいていません]"
+
 
 class Message(TypedDict):
     role: Literal["user", "assistant"]
@@ -108,6 +111,7 @@ class Anthropic:
                 part = data["content"]
                 text = "".join(block["text"] for block in [*content, *part] if block["type"] == "text")
                 found = sources([*content, *part])
+                failed = search_failed([*content, *part])
                 stop_reason = data.get("stop_reason")
             except (ValueError, KeyError, TypeError, AttributeError) as e:
                 raise Unreachable(f"AI に繋がりません (応答の形が想定外です: {type(e).__name__})") from e
@@ -115,7 +119,7 @@ class Anthropic:
             if stop_reason != "pause_turn":
                 break
             body["messages"] = [*body["messages"], {"role": "assistant", "content": part}]
-        return noted(cited(text, found), stop_reason)
+        return noted(cited(warned(text, failed), found), stop_reason)
 
     def reachable(self) -> bool:
         # 一覧ではなく選んだモデルの情報を取る。名前の誤りも送る前に分かり、トークンも使わない。
@@ -160,6 +164,23 @@ def sources(content: list[dict[str, object]]) -> list[tuple[str, str]]:
             # 題名の改行で 1 行 1 つの形が崩れないよう、空白をつめる。
             seen[url.strip()] = " ".join(title.split()) if isinstance(title, str) else ""
     return [(title, url) for url, title in seen.items()]
+
+
+def search_failed(content: list[dict[str, object]]) -> bool:
+    """検索の結果がエラー (web_search_tool_result_error) だった web_search_tool_result が 1 つでもあれば真。"""
+    return any(
+        block["type"] == "web_search_tool_result"
+        and isinstance(result := block.get("content"), dict)
+        and result.get("type") == "web_search_tool_result_error"
+        for block in content
+    )
+
+
+def warned(text: str, failed: bool) -> str:
+    """検索が失敗した応答の本文の後に、空行を置いて検索できなかったことを告げる一文を添える。失敗が無ければ本文のまま。"""
+    if not failed:
+        return text
+    return "\n\n".join(part for part in (text, SEARCH_FAILED_NOTE) if part)
 
 
 def cited(text: str, found: Sequence[tuple[str, str]]) -> str:
