@@ -41,6 +41,14 @@ class Message:
     created_at: str
 
 
+@dataclass(frozen=True)
+class Conversation:
+    id: int
+    # id は消された会話のものが使い直される。読んだ会話と同じかは、作成時刻も合わせて見分ける。
+    created_at: str
+    messages: list[Message]
+
+
 def now() -> str:
     # 桁を固定する。isoformat() はマイクロ秒が 0 だと小数部を省き、文字列の順が時刻の順でなくなる。
     return datetime.now(UTC).isoformat(timespec="microseconds")
@@ -98,17 +106,24 @@ class Database:
         with self._lock, self._conn:
             self._insert_message(conversation_id, role, content)
 
-    def add_exchange(self, conversation_id: int | None, user: str, assistant: str) -> int:
+    def add_exchange(self, conversation: Conversation | None, user: str, assistant: str) -> int | None:
         """user の発言と assistant の応答をこの順に 1 つのトランザクションで記録し、会話の id を返す。
 
-        conversation_id が None なら、同じトランザクションで新しい会話を作る。途中で失敗したら何も残らない。
+        conversation が None なら、同じトランザクションで新しい会話を作る。
+        読んだその会話がもう無ければ (同じ id の別の会話があっても) 何も記録せず None。途中で失敗したら何も残らない。
         """
         with self._lock, self._conn:
-            if conversation_id is None:
+            if conversation is None:
                 at = now()
                 conversation_id = self._conn.execute(
                     "INSERT INTO conversations (created_at, updated_at) VALUES (?, ?)", (at, at)
                 ).lastrowid
+            else:
+                conversation_id = conversation.id
+                if self._conn.execute(
+                    "SELECT 1 FROM conversations WHERE id = ? AND created_at = ?", (conversation_id, conversation.created_at)
+                ).fetchone() is None:
+                    return None
             self._insert_message(conversation_id, "user", user)
             self._insert_message(conversation_id, "assistant", assistant)
         return conversation_id
@@ -122,10 +137,19 @@ class Database:
         )
         self._conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (at, conversation_id))
 
-    def has_conversation(self, conversation_id: int) -> bool:
-        with self._lock:
-            row = self._conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
-        return row is not None
+    def delete_conversation(self, conversation_id: int) -> bool:
+        """その会話とメッセージをすべて 1 つのトランザクションで消してコミットする。そのような会話が無ければ何もせず False。
+
+        途中で失敗したら何も消えない。
+        """
+        with self._lock, self._conn:
+            # 先に有無を確かめる。読み取り専用の記録では、消す行が無くても DELETE が失敗する。
+            if self._conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone() is None:
+                return False
+            # メッセージが先。会話を先に消すと外部キーの制約に掛かる。
+            self._conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
+            self._conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+        return True
 
     def list_conversations(self) -> list[ConversationSummary]:
         with self._lock:
@@ -142,10 +166,16 @@ class Database:
             ).fetchall()
         return [ConversationSummary(*row) for row in rows]
 
-    def messages(self, conversation_id: int) -> list[Message]:
+    def conversation(self, conversation_id: int) -> Conversation | None:
+        """その会話を、メッセージを記録した順に並べて返す。そのような会話が無ければ None。"""
         with self._lock:
+            created = self._conn.execute(
+                "SELECT created_at FROM conversations WHERE id = ?", (conversation_id,)
+            ).fetchone()
+            if created is None:
+                return None
             rows = self._conn.execute(
                 "SELECT role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY id",
                 (conversation_id,),
             ).fetchall()
-        return [Message(*row) for row in rows]
+        return Conversation(conversation_id, created[0], [Message(*row) for row in rows])

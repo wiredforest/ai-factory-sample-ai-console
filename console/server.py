@@ -79,6 +79,27 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.reply_json(found)
 
+    def do_DELETE(self) -> None:
+        path = urlsplit(self.path).path
+        if path.startswith(CONVERSATION_PREFIX):
+            self.delete_conversation(path.removeprefix(CONVERSATION_PREFIX))
+        else:
+            self.send_error(404)
+
+    def delete_conversation(self, raw_id: str) -> None:
+        if self.server.db is None:
+            self.reply_db_unavailable()
+            return
+        try:
+            deleted = history.delete(self.server.db, raw_id)
+        except sqlite3.Error:
+            self.reply_json({"error": "db_write_failed", "message": "会話を削除できませんでした"}, 503)
+            return
+        if deleted is None:
+            self.reply_json({"error": "conversation_not_found"}, 404)
+        else:
+            self.reply_json(deleted)
+
     def do_POST(self) -> None:
         path = urlsplit(self.path).path
         if path == "/api/messages":
