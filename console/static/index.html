@@ -23,8 +23,8 @@
   #conversations { list-style: none; margin: 0; padding: 0; }
   #conversations li { display: flex; align-items: flex-start; border-bottom: 1px solid #eee; }
   #conversations .open { display: block; flex: 1; min-width: 0; padding: 0.5rem; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
-  #conversations .open:hover { background: #f2f2ef; }
-  #conversations li[aria-current="true"] .open { background: #e3effa; }
+  #conversations li:not([aria-current="true"]) .open:hover { background: #f2f2ef; }
+  #conversations li[aria-current="true"] { background: #e3effa; }
   #conversations .delete { margin: 0.5rem 0.25rem; font: inherit; font-size: 0.8rem; }
   #conversations .title { display: block; overflow-wrap: anywhere; }
   #conversations time { font-size: 0.8rem; color: #777; }
