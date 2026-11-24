@@ -51,6 +51,11 @@
   .bubble .text h1 { font-size: 1.5em; }
   .bubble .text h2 { font-size: 1.3em; }
   .bubble .text h3 { font-size: 1.15em; }
+  .bubble .text pre { padding: 0.5rem 0.75rem; border-radius: 0.375rem; background: #f3f4f6; color: #1f2328; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.875em; white-space: pre; overflow-wrap: normal; overflow-x: auto; }
+  .bubble .text pre.markdown { background: #fdf6e3; color: #5c4400; }
+  .bubble .text pre code { font: inherit; }
+  .bubble .text .code-info { color: #57606a; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8em; }
+  .bubble .text .code-info + pre { margin-top: 0.25em; }
   .bubble .text :is(ul, ol) { padding-left: 2em; }
   .bubble .text li > * { margin: 0.25em 0 0; }
   .bubble.user { align-self: flex-end; background: #d7ecff; }
@@ -257,6 +262,9 @@
   let chatView = 0;
   // 送れなかった送信の、記録されていない自分の吹き出しとその後の表示。
   let unsent = [];
+  // 会話の領域に出している送れなかった送信の、送った会話と本文と理由。無ければ null。
+  // 会話の領域を別の会話に替えるときは、領域の外の知らせに移して本文を残す (#64)。
+  let unsentSend = null;
   // 今の会話の最初の自分の発言。履歴の題名がまだ届いていない会話を知らせで示すのに使う。
   let currentFirstText = null;
   // 履歴の一覧での会話の題名 (history-loaded で受け取る)。
@@ -285,42 +293,59 @@
   }
 
   // AI の応答の原文を Markdown のブロックとして読み、吹き出しの本文に並べる要素を返す。記録は原文のままで、出すたびにここで組み立てる。
-  // 解釈するのは見出しと段落 (段落の中の改行は br) と箇条書きだけ。ほかの書式や HTML のタグは、書かれたままの文字として段落に入れる。
+  // 解釈するのは見出しと段落 (段落の中の改行は br) と箇条書きとコードブロックだけ。ほかの書式や HTML のタグは、書かれたままの文字として段落に入れる。
   // 箇条書きは、印 (-・*・+ か、数字と .) の後に空白が続く行。前の項目の印より 2 文字以上深く字下げした項目は、その項目の中の入れ子のリストにする。
   // 入れ子は何段でも同じ規則で深くする。
-  // コードのフェンス (``` や ~~~) から閉じるフェンスまでは解釈せず、フェンスの行も空行も含めて書かれたままの 1 つの段落にする。
+  // 行頭のフェンス (``` や ~~~) から閉じるフェンスまではコードブロック (pre の中の code) にし、中身は解釈せずに文字のまま入れる。
+  // 閉じないまま応答が終わったら、開きのフェンスの行から終わりまでを書かれたままの 1 つの段落にする。
   function markdownBlocks(text) {
     const blocks = [];
     // 今の段落。空行と見出しとフェンスで閉じる。
     let paragraph = null;
-    // 開いているフェンスの記号の並び (```` ``` ```` など)。閉じるまで、または応答の終わりまで続く。
+    // 開いているフェンス。記号の並び (```` ``` ```` など) と、コードブロックなら開きの行・字下げ・情報 (フェンスの後の文字)・言語 (その最初の語)・中身の行を持つ。
+    // 閉じるまで、または応答の終わりまで続く。
     let fence = null;
     // 開いている箇条書き。外側から順に、項目の印の位置 (字下げの幅)・リストの要素・最後の項目。空行を挟んでも続く。
     let lists = [];
     for (const line of text.split(/\r?\n/)) {
       if (fence) {
-        paragraph.append(document.createElement("br"), line);
         const closing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
-        if (closing && closing[1][0] === fence[0] && closing[1].length >= fence.length) {
+        const closes = closing && closing[1][0] === fence.marker[0] && closing[1].length >= fence.marker.length;
+        if (fence.lines) {
+          if (closes) {
+            // 言語の語の後ろに書かれた文字 (`title="a.js"` など) は解釈しないが、失わないようにブロックの上に書かれたまま出す。
+            if (fence.info !== fence.lang) {
+              const info = document.createElement("p");
+              info.className = "code-info";
+              info.textContent = fence.info;
+              blocks.push(info);
+            }
+            blocks.push(codeBlock(fence));
+          } else {
+            fence.lines.push(line);
+          }
+        } else {
+          paragraph.append(document.createElement("br"), line);
+        }
+        if (closes) {
           fence = null;
           paragraph = null;
         }
         continue;
       }
-      const opening = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
-      if (opening && !(opening[1][0] === "`" && opening[2].includes("`"))) {
-        fence = opening[1];
+      const opening = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line);
+      if (opening && !(opening[2][0] === "`" && opening[3].includes("`"))) {
+        const info = opening[3].trim();
+        fence = { marker: opening[2], line, indent: opening[1].length, info, lang: info.split(/\s+/)[0], lines: [] };
+        paragraph = null;
         lists = [];
-        paragraph = document.createElement("p");
-        paragraph.append(line);
-        blocks.push(paragraph);
         continue;
       }
       // 文の後ろで開くフェンス (`前置き ```python` など)。Markdown ではフェンスではないが、続く行を見出しにすると
       // コードの # が消える。フェンスとみなしても、文字が書かれたまま出るだけで何も失わない。
       const trailing = /(?:^|[^`~])(`{3,}|~{3,})[\w+#.-]*[ \t]*$/.exec(line);
       if (trailing && !line.slice(0, trailing.index + 1).includes(trailing[1])) {
-        fence = trailing[1];
+        fence = { marker: trailing[1] };
         lists = [];
         if (paragraph) {
           paragraph.append(document.createElement("br"), line);
@@ -396,7 +421,28 @@
         }
       }
     }
+    // 閉じていないコードブロックは解釈せず、文字を失わないように書かれたまま出す。
+    if (fence?.lines) {
+      paragraph = document.createElement("p");
+      paragraph.append(fence.line);
+      for (const line of fence.lines) paragraph.append(document.createElement("br"), line);
+      blocks.push(paragraph);
+    }
     return blocks;
+  }
+
+  // 閉じたフェンスの中身を、字下げと改行を保ったコードブロックにする。言語はまだどれも色分けしない。
+  function codeBlock(fence) {
+    const pre = document.createElement("pre");
+    const code = document.createElement("code");
+    if (fence.lang) code.dataset.lang = fence.lang;
+    // Markdown の原文は、ほかのコードと見分けがつくように色を変える (中身は解釈しない)。
+    if (["markdown", "md"].includes(fence.lang.toLowerCase())) pre.className = "markdown";
+    // 開きのフェンスの字下げの分だけ、中身の行の頭の空白を外す (CommonMark と同じ)。
+    const indent = new RegExp(`^ {0,${fence.indent}}`);
+    code.textContent = fence.lines.map((line) => line.replace(indent, "")).join("\n");
+    pre.append(code);
+    return pre;
   }
 
   // 行頭の空白とタブの幅。タブは次の 4 の倍数の位置まで進める。
@@ -458,7 +504,7 @@
     else if (llmUnreachedErrors.includes(error)) document.dispatchEvent(new CustomEvent("llm-reached", { detail: { ok: false } }));
   }
 
-  function showUnsent(bubble, text, message) {
+  function showUnsent(bubble, text, message, origin) {
     const notice = document.createElement("p");
     notice.className = "error";
     notice.setAttribute("role", "alert");
@@ -466,8 +512,19 @@
     bubble.after(notice);
     chatMessages.scrollTop = chatMessages.scrollHeight;
     unsent = [bubble, notice];
+    unsentSend = { origin, text, message };
     // 待っている間に新しく打ち始めていたら、それを消さない。送った本文は吹き出しに残っている。
     if (!composerText.value) composerText.value = text;
+  }
+
+  // 会話の領域に出している送れなかった本文を、領域の外の知らせに移す。会話の領域を別の会話に替える直前に呼ぶ。
+  // 入力欄に戻した本文はその知らせにあるので、入力欄からは消す。次に出す会話へ誤って送られない。打ち替えていたら残す。
+  function moveUnsentOut() {
+    if (!unsentSend) return;
+    const { origin, text, message } = unsentSend;
+    unsentSend = null;
+    showUnsentElsewhere(origin, text, message);
+    if (composerText.value === text) composerText.value = "";
   }
 
   // 送っている間に別の会話を開き、そのままなら、送れなかったことを会話の領域の外に知らせる。
@@ -549,6 +606,7 @@
     // 前に送れなかった吹き出しは記録されていない。送り直す分の吹き出しで置き換え、同じ発言を重ねない。
     unsent.forEach((element) => element.remove());
     unsent = [];
+    unsentSend = null;
     const bubble = addBubble("user", text);
     const view = chatView;
     const origin = { conversationId: currentConversationId, firstText: currentFirstText ?? text };
@@ -562,8 +620,8 @@
         });
       } catch (error) {
         // サーバに届かない。AI に繋がらないときと同じく、送った本文は記録されていない。
-        if (await stillShown(view)) showUnsent(bubble, text, "AI に繋がりません");
-        else if (reopened(origin)) showUnsent(addBubble("user", text), text, "AI に繋がりません");
+        if (await stillShown(view)) showUnsent(bubble, text, "AI に繋がりません", origin);
+        else if (reopened(origin)) showUnsent(addBubble("user", text), text, "AI に繋がりません", origin);
         else showUnsentElsewhere(origin, text, "AI に繋がりません");
         throw error;
       }
@@ -571,8 +629,8 @@
         const error = await errorOf(response);
         const message = failureReason(error);
         // 送っている間に別の会話を開いたままなら、送れなかった表示も本文も、開いた会話には出さない。
-        if (await stillShown(view)) showUnsent(bubble, text, message);
-        else if (reopened(origin)) showUnsent(addBubble("user", text), text, message);
+        if (await stillShown(view)) showUnsent(bubble, text, message, origin);
+        else if (reopened(origin)) showUnsent(addBubble("user", text), text, message, origin);
         else showUnsentElsewhere(origin, text, message);
         // AI に繋がらなかったことは、どの会話を出していてもサーバの状態に知らせる。
         reportSent(false, error);
@@ -598,18 +656,25 @@
     const { conversationId, messages } = event.detail;
     chatView++;
     settleOpening();
+    // 同じ会話を開き直したら、送れなかった吹き出しは同じ会話のものとして出し直す (#48 と同じ)。別の会話なら、領域の外の知らせに残す。
+    const kept = unsentSend?.origin.conversationId === conversationId ? unsentSend : null;
+    if (!kept) moveUnsentOut();
     // 送れなかった吹き出しも、前の会話のものなので一緒に消える。
     chatMessages.replaceChildren();
     unsent = [];
+    unsentSend = null;
     for (const message of messages) addBubble(message.role, message.text);
     currentConversationId = conversationId;
     currentFirstText = messages.find((message) => message.role === "user")?.text ?? null;
+    if (kept) showUnsent(addBubble("user", kept.text), kept.text, kept.message, kept.origin);
   });
 
   // 押しただけでは会話を作らない。次の送信が conversation_id: null で送られ、成功したときに記録される。
   newConversationButton.addEventListener("click", () => {
     chatView++;
     settleOpening();
+    // 送れなかった本文は、領域の外の知らせに残す。新しい会話から送れなかった本文も、元の会話「新しい会話」として残す。
+    moveUnsentOut();
     // 送れなかった表示も会話の領域の中にあるので、吹き出しと一緒に消える。
     chatMessages.replaceChildren();
     unsent = [];
@@ -620,8 +685,12 @@
     composerText.focus();
   });
   // 開いている会話が消えたら、新しい会話を押したときと同じにする。消えた id は、次に作る会話に使い直されることがあるので、その id では送らない。
+  // 消した会話で送れなかった本文は、知らせに残さない。消えた id へ送り直すと、その id を使い直した別の会話に記録されてしまう。
   document.addEventListener("conversation-deleted", (event) => {
-    if (event.detail.conversationId === currentConversationId) newConversationButton.click();
+    if (event.detail.conversationId === currentConversationId) {
+      unsentSend = null;
+      newConversationButton.click();
+    }
   });
 
   document.addEventListener("conversation-opening", () => {

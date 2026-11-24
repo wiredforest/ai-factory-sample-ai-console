@@ -337,6 +337,36 @@ def test_page_says_when_the_ai_is_unreachable_and_puts_the_text_back(start_app):
     assert "composerText.value = text" in page
 
 
+def test_a_failed_send_left_behind_moves_to_the_failure_notice_once(start_app):
+    # 送れなかった吹き出しを出したまま別の会話を開くか新しい会話にしたら、本文を会話の領域の外の知らせに残す (#64)。
+    page = start_app().get("/").body.decode("utf-8")
+    show_unsent = re.search(r"function showUnsent\(bubble, text, message, origin\) \{\n(.*?)\n  \}\n", page, re.DOTALL).group(1)
+    # 会話の領域に出した送れなかった送信は、送った会話と本文と理由を覚える。
+    assert "unsentSend = { origin, text, message };" in show_unsent
+    move = re.search(r"function moveUnsentOut\(\) \{\n(.*?)\n  \}\n", page, re.DOTALL).group(1)
+    # 移すのは 1 回だけ。覚えを消してから知らせを作るので、同じ本文から項目を 2 つ作らない。
+    assert move.index("if (!unsentSend) return;") < move.index("unsentSend = null;") < move.index("showUnsentElsewhere(origin, text, message);")
+    # 知らせへ移した本文は、次に出す会話の入力欄に残さない。打ち替えていたら残す。
+    assert 'if (composerText.value === text) composerText.value = "";' in move
+    # 別の会話を開いたら、前の会話の領域を消す前に移す。同じ会話を開き直したら、移さずに吹き出しを出し直す (#48 と同じ)。
+    opened = re.search(r'document\.addEventListener\("conversation-opened", \(event\) => \{(.*?)\n  \}\);', page, re.DOTALL).group(1)
+    assert "const kept = unsentSend?.origin.conversationId === conversationId ? unsentSend : null;" in opened
+    assert opened.index("if (!kept) moveUnsentOut();") < opened.index("chatMessages.replaceChildren();")
+    assert opened.index("unsentSend = null;") < opened.index("if (kept) showUnsent(addBubble(\"user\", kept.text), kept.text, kept.message, kept.origin);")
+    # 新しい会話を押しても、領域を消す前に移す。新しい会話で送れなかった本文は origin が null で、元の会話「新しい会話」として残る。
+    clicked = re.search(r'newConversationButton\.addEventListener\("click", \(\) => \{(.*?)\n  \}\);', page, re.DOTALL).group(1)
+    assert clicked.index("moveUnsentOut();") < clicked.index("chatMessages.replaceChildren();")
+    assert '? "新しい会話"' in page
+    # 入力欄から送り直したら (同じ会話のままの今の動き)、前の失敗は覚えから消える。成功してから別の会話を開いても、項目を作らない。
+    send = re.search(r"async function sendMessage\(\) \{\n(.*?)\n  \}\n", page, re.DOTALL).group(1)
+    assert send.index("unsentSend = null;") < send.index('const bubble = addBubble("user", text);')
+    # 開いていた会話を消したら、その会話の送れなかった本文は知らせに移さない (消えた id へは送り直さない)。
+    deleted = re.search(r'document\.addEventListener\("conversation-deleted", \(event\) => \{(.*?)\n  \}\);', page, re.DOTALL).group(1)
+    assert deleted.index("unsentSend = null;") < deleted.index("newConversationButton.click();")
+    # 知らせからの送り直しは、知らせが持つ元の会話へだけ送り、成功したらその項目だけを消す。
+    assert "body: JSON.stringify({ conversation_id: origin.conversationId, text })," in page
+
+
 def test_a_resend_from_the_unsent_notice_updates_the_llm_status_by_the_same_rule_as_a_send(start_app):
     # 送れなかった知らせからの送り直しも送信の 1 つ。通常の送信と同じ規則で「AI への接続」に知らせる (#61)。
     page = start_app().get("/").body.decode("utf-8")

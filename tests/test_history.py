@@ -247,8 +247,8 @@ def test_a_failed_send_returns_to_the_composer_when_its_conversation_was_reopene
     assert reopened.strip() == "return origin.conversationId !== null && origin.conversationId === currentConversationId;"
     send = re.search(r"async function sendMessage\(\) \{\n(.*?)\n  \}\n", page, re.DOTALL).group(1)
     branches = re.findall(
-        r"if \(await stillShown\(view\)\) showUnsent\(bubble, text, (.+?)\);\n"
-        r" +else if \(reopened\(origin\)\) showUnsent\(addBubble\(\"user\", text\), text, (.+?)\);\n"
+        r"if \(await stillShown\(view\)\) showUnsent\(bubble, text, (.+?), origin\);\n"
+        r" +else if \(reopened\(origin\)\) showUnsent\(addBubble\(\"user\", text\), text, (.+?), origin\);\n"
         r" +else showUnsentElsewhere\(origin, text, (.+?)\);",
         send,
     )
@@ -257,7 +257,7 @@ def test_a_failed_send_returns_to_the_composer_when_its_conversation_was_reopene
     # 開き直した会話の送り直しは、今の会話 (= 送った会話) の id へ送られ、前の失敗の吹き出しを置き換える。
     assert "body: JSON.stringify({ conversation_id: currentConversationId, text })," in send
     assert send.index("unsent.forEach((element) => element.remove());") < send.index('const bubble = addBubble("user", text);')
-    show_unsent = re.search(r"function showUnsent\(bubble, text, message\) \{\n(.*?)\n  \}\n", page, re.DOTALL).group(1)
+    show_unsent = re.search(r"function showUnsent\(bubble, text, message, origin\) \{\n(.*?)\n  \}\n", page, re.DOTALL).group(1)
     assert "unsent = [bubble, notice];" in show_unsent
     assert "if (!composerText.value) composerText.value = text;" in show_unsent
     # 成功したときは、今までどおり送ったときの領域を出したままのときだけ応答を足す。
