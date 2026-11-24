@@ -4,6 +4,7 @@ import http.client
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Sequence
 from datetime import date
@@ -105,8 +106,9 @@ class Anthropic:
         return noted(cited(text, found), stop_reason)
 
     def reachable(self) -> bool:
+        # 一覧ではなく選んだモデルの情報を取る。名前の誤りも送る前に分かり、トークンも使わない。
         try:
-            call("GET", "/models", CHECK_TIMEOUT_S)
+            call("GET", "/models/" + urllib.parse.quote(self.model, safe=""), CHECK_TIMEOUT_S)
         except Unreachable:
             return False
         return True

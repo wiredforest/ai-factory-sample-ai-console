@@ -360,19 +360,35 @@ def test_anthropic_reply_of_an_unexpected_shape_becomes_unreachable(stub_urlopen
     assert "LEAKCHECK" not in "".join(traceback.format_exception(raised.value))
 
 
+MODEL_INFO = {"type": "model", "id": "claude-sonnet-5-5", "display_name": "Claude Sonnet 5.5"}
+
+
 @pytest.mark.parametrize(("stub", "reachable"), [
-    ({"answer": {"data": []}}, True),
+    ({"answer": MODEL_INFO}, True),
     ({"answer": b"not json"}, True),
+    ({"error": http_error(404)}, False),
     ({"error": http_error(401)}, False),
-], ids=["200", "200-not-json", "401"])
-def test_anthropic_check_lists_the_models(stub_urlopen, api_key, stub, reachable):
+    ({"error": http_error(500)}, False),
+    ({"error": urllib.error.URLError("connection refused")}, False),
+], ids=["200", "200-not-json", "HTTPError-404", "HTTPError-401", "HTTPError-500", "URLError"])
+def test_anthropic_check_gets_the_chosen_model(stub_urlopen, api_key, monkeypatch, stub, reachable):
+    monkeypatch.setenv("CONSOLE_MODEL", "claude-sonnet-5-5")
     fake = stub_urlopen(**stub)
     assert responder("anthropic").reachable() is reachable
     [(request, timeout)] = fake.calls
     assert request.get_method() == "GET"
-    assert request.full_url == "https://api.anthropic.com/v1/models"
+    assert request.full_url == "https://api.anthropic.com/v1/models/claude-sonnet-5-5"
+    assert request.data is None
     assert request.get_header("X-api-key") == LEAKY_KEY
     assert timeout == 5
+
+
+def test_anthropic_check_puts_the_model_name_in_one_segment_of_the_path(stub_urlopen, api_key, monkeypatch):
+    monkeypatch.setenv("CONSOLE_MODEL", "a/b c")
+    fake = stub_urlopen(error=http_error(404))
+    assert responder("anthropic").reachable() is False
+    [(request, _)] = fake.calls
+    assert request.full_url == "https://api.anthropic.com/v1/models/a%2Fb%20c"
 
 
 def test_calling_urlopen_without_a_stub_fails_the_test(api_key):

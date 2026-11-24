@@ -4,12 +4,14 @@ import os
 import re
 import socket
 import threading
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 from test_app import TextById
+from test_llm import FakeUrlopen, http_error
 
-from console import status
+from console import llm, status
 from console.db import Database
 from console.server import ConsoleServer
 
@@ -155,3 +157,28 @@ def test_app_is_false_when_nothing_listens():
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
     assert status.app_ok(port) is False
+
+
+@pytest.mark.parametrize(("stub", "llm_ok"), [
+    ({"answer": {"type": "model", "id": "claude-sonnet-5-5"}}, True),
+    ({"error": http_error(404)}, False),
+], ids=["200", "HTTPError-404"])
+def test_llm_is_ok_only_when_the_chosen_model_is_found(monkeypatch, db, stub, llm_ok):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    fake = FakeUrlopen(**stub)
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    stub_app = serve_health(200, b"ok")
+    try:
+        port = stub_app.server_address[1]
+        db_path = os.environ["CONSOLE_DB_PATH"]
+        checked = status.check(port, db_path, llm.Anthropic("claude-sonnet-5-5"))["items"]
+        with_fake = status.check(port, db_path, llm.Fake())["items"]
+    finally:
+        stub_app.shutdown()
+        stub_app.server_close()
+    assert oks(checked) == [True, llm_ok, True]
+    assert [checked[0], checked[2]] == [with_fake[0], with_fake[2]]
+    # 状態の確認はモデルの情報を 1 回取るだけで、Messages API は呼ばない。
+    assert [(request.get_method(), request.full_url) for request, _ in fake.calls] == [
+        ("GET", "https://api.anthropic.com/v1/models/claude-sonnet-5-5"),
+    ]
