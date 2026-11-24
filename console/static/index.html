@@ -152,9 +152,18 @@
   async function openConversation(conversationId) {
     // 続けて選んだら、最後に選んだ会話だけを開く。
     const request = ++openRequest;
-    const response = await fetch(`/api/conversations/${conversationId}`);
-    if (!response.ok) throw new Error(`GET /api/conversations/${conversationId}: ${response.status}`);
-    const { id, messages } = await response.json();
+    // 会話の送受信は conversation-opening を受けると、開き終わるか開けなかったと分かるまで、送信中の結果を今の会話に出すか決めずに待つ。
+    document.dispatchEvent(new CustomEvent("conversation-opening"));
+    let id, messages;
+    try {
+      const response = await fetch(`/api/conversations/${conversationId}`);
+      if (!response.ok) throw new Error(`GET /api/conversations/${conversationId}: ${response.status}`);
+      ({ id, messages } = await response.json());
+    } catch (error) {
+      // 開けなかったら会話の領域は前の会話のまま。後から別の会話を選んだり新しい会話にしたりしていたら、待ちはそちらが解く。
+      if (request === openRequest) document.dispatchEvent(new CustomEvent("conversation-open-failed"));
+      throw error;
+    }
     if (request !== openRequest) return;
     currentHistoryId = id;
     markCurrent();
@@ -193,6 +202,20 @@
   // 履歴の一覧での会話の題名 (history-loaded で受け取る)。
   const conversationTitles = new Map();
   const sendFailures = document.getElementById("send-failures");
+  // 履歴で選んだ会話を開いている途中なら、開き終わるか開けなかったと分かるときに解ける約束。開いていなければ null。
+  let opening = null;
+
+  function settleOpening() {
+    opening?.resolve();
+    opening = null;
+  }
+
+  // 送ったときの会話を、結果が返った今も会話の領域に出しているか。
+  // 別の会話を開いている途中なら、その結果が分かるまで待つ。開いたら、送った会話のものとして領域の外に知らせる。
+  async function stillShown(view) {
+    while (opening) await opening.promise;
+    return view === chatView;
+  }
 
   function addBubble(role, text) {
     const bubble = document.createElement("div");
@@ -279,7 +302,7 @@
         });
       } catch (error) {
         // サーバに届かない。AI に繋がらないときと同じく、送った本文は記録されていない。
-        if (view === chatView) showUnsent(bubble, text, "AI に繋がりません");
+        if (await stillShown(view)) showUnsent(bubble, text, "AI に繋がりません");
         else showUnsentElsewhere(origin, text, "AI に繋がりません");
         throw error;
       }
@@ -287,12 +310,12 @@
         const error = await errorOf(response);
         const message = error === "llm_unavailable" ? "AI に繋がりません" : "送信できませんでした";
         // 送っている間に別の会話を開いていたら、送れなかった表示も本文も、開いた会話には出さない。
-        if (view === chatView) showUnsent(bubble, text, message);
+        if (await stillShown(view)) showUnsent(bubble, text, message);
         else showUnsentElsewhere(origin, text, message);
         throw new Error(`POST /api/messages: ${response.status} ${error}`);
       }
       const { conversation_id, messages } = await response.json();
-      const shown = view === chatView;
+      const shown = await stillShown(view);
       if (shown) {
         // 自分の吹き出しはもう出ているので、AI の応答だけを足す。
         addBubble("assistant", messages[messages.length - 1].text);
@@ -309,6 +332,7 @@
   document.addEventListener("conversation-opened", (event) => {
     const { conversationId, messages } = event.detail;
     chatView++;
+    settleOpening();
     // 送れなかった吹き出しも、前の会話のものなので一緒に消える。
     chatMessages.replaceChildren();
     unsent = [];
@@ -320,6 +344,7 @@
   // 押しただけでは会話を作らない。次の送信が conversation_id: null で送られ、成功したときに記録される。
   newConversationButton.addEventListener("click", () => {
     chatView++;
+    settleOpening();
     // 送れなかった表示も会話の領域の中にあるので、吹き出しと一緒に消える。
     chatMessages.replaceChildren();
     unsent = [];
@@ -329,6 +354,14 @@
     document.dispatchEvent(new CustomEvent("conversation-new"));
     composerText.focus();
   });
+
+  document.addEventListener("conversation-opening", () => {
+    if (opening) return;
+    let resolve;
+    const promise = new Promise((r) => { resolve = r; });
+    opening = { promise, resolve };
+  });
+  document.addEventListener("conversation-open-failed", settleOpening);
 
   document.addEventListener("history-loaded", (event) => {
     for (const { conversationId, title } of event.detail.titles) conversationTitles.set(conversationId, title);
