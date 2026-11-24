@@ -1,7 +1,10 @@
+import json
 import os
+import re
 import subprocess
 from html.parser import HTMLParser
 
+import pytest
 from conftest import ROOT, app_argv, free_port
 
 
@@ -66,6 +69,22 @@ def test_page_shows_the_three_areas(start_app):
     assert "会話がまだありません" in parser.text["history"]
 
 
+def test_page_offers_deleting_a_conversation_after_confirming(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    assert "削除" in page
+    assert "取り消せません" in page
+    parser = TextById()
+    parser.feed(page)
+    assert "会話を削除できませんでした" in parser.text["history"]
+    # 確認で取りやめたら送らず、200 を受け取ってから一覧から外す。
+    assert re.search(r"if \(!window\.confirm\(.*?\)\) return;\n.*?method: \"DELETE\".*?if \(!response\.ok\) \{.*?\}\n.*?item\.remove\(\);", page, re.DOTALL)
+    # 開いている会話が消えたら、会話の送受信が新しい会話を押したときと同じにする。
+    assert 'new CustomEvent("conversation-deleted"' in page
+    assert "if (event.detail.conversationId === currentConversationId) newConversationButton.click();" in page
+    # 開いている途中の会話を消したら開かず、会話の送受信の待ちを開けなかったときと同じに解く (送信の結果が出ないままにしない)。
+    assert re.search(r'if \(openingId === conversation\.id\) \{\n\s*openRequest\+\+;\n\s*document\.dispatchEvent\(new CustomEvent\("conversation-open-failed"\)\);', page)
+
+
 def test_listens_on_loopback_only(start_app):
     app = start_app()
     assert app.startup_line == f"listening on http://127.0.0.1:{app.port}"
@@ -90,6 +109,22 @@ def test_unknown_llm_exits_2():
     result = run_until_exit(CONSOLE_LLM="bogus")
     assert result.returncode == 2
     assert "CONSOLE_LLM" in result.stderr
+
+
+@pytest.mark.parametrize("model", ["no-such-model", ""], ids=["unknown-name", "empty"])
+@pytest.mark.parametrize(("llm", "status_oks"), [
+    ("fake", [True, True, True]),
+    ("fake-down", [True, False, True]),
+])
+def test_fake_responders_ignore_console_model(start_app, model, llm, status_oks):
+    app = start_app(CONSOLE_LLM=llm, CONSOLE_MODEL=model)
+    status = json.loads(app.get("/api/status").body)["items"]
+    assert [(item["label"], item["ok"]) for item in status] == list(zip(["アプリ自身", "AI への接続", "会話の記録"], status_oks))
+    if llm == "fake":
+        r = app.post_json("/api/messages", {"conversation_id": None, "text": "りんごの話"})
+        assert r.status == 200
+        assert json.loads(r.body)["messages"][-1] == {"role": "assistant", "text": "fake reply #1: りんごの話"}
+    assert app.proc.poll() is None
 
 
 def test_port_in_use_exits_2_with_one_line_and_leaves_the_first_running(start_app):

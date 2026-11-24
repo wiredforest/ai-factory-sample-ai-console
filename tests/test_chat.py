@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 
 import pytest
-from test_llm import LEAKY_KEY, FakeUrlopen, http_error
+from test_llm import LEAKY_KEY, FakeUrlopen, http_error, responder
 
 from console import chat, llm
 from console.db import Database
@@ -206,7 +206,7 @@ def test_a_failed_send_says_why_records_nothing_and_never_shows_the_key(db, monk
     before = counts(db)
 
     for conversation_id in (None, conversation):
-        status, body = post_in_process(llm.responder(llm_name), conversation_id)
+        status, body = post_in_process(responder(llm_name), conversation_id)
         assert (status, json.loads(body)) == (503, {"error": error, "message": FAILURE_MESSAGES[error]})
         assert "LEAKCHECK" not in body.decode("utf-8")
     assert counts(db) == before

@@ -175,7 +175,7 @@ def main(argv: list[str]) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
     try:
-        server = ConsoleServer(args.port, settings.db_path, llm.responder(settings.llm))
+        server = ConsoleServer(args.port, settings.db_path, llm.responder(settings.llm, settings.model))
     except OSError as e:
         if e.errno != errno.EADDRINUSE:
             raise

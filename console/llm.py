@@ -5,12 +5,11 @@ import json
 import os
 import urllib.error
 import urllib.request
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Literal, Protocol, TypedDict
 
 API_URL = "https://api.anthropic.com/v1"
 API_VERSION = "2023-06-01"
-MODEL = "claude-haiku-5-5"
 MAX_TOKENS = 1024
 REPLY_TIMEOUT_S = 30
 CHECK_TIMEOUT_S = 5
@@ -58,8 +57,11 @@ class FakeDown:
 
 
 class Anthropic:
+    def __init__(self, model: str) -> None:
+        self.model = model
+
     def reply(self, messages: Sequence[Message]) -> str:
-        body = {"model": MODEL, "max_tokens": MAX_TOKENS, "messages": list(messages)}
+        body = {"model": self.model, "max_tokens": MAX_TOKENS, "messages": list(messages)}
         answer = call("POST", "/messages", REPLY_TIMEOUT_S, body)
         try:
             content = json.loads(answer)["content"]
@@ -109,9 +111,14 @@ def refusal(code: int) -> Unreachable:
     return Unreachable(f"AI に繋がりません (HTTP {code})")
 
 
-RESPONDERS: dict[str, Responder] = {"fake": Fake(), "fake-down": FakeDown(), "anthropic": Anthropic()}
+# 応答役をモデルの名前から作る。偽の応答役はモデルを使わない。
+RESPONDERS: dict[str, Callable[[str], Responder]] = {
+    "fake": lambda model: Fake(),
+    "fake-down": lambda model: FakeDown(),
+    "anthropic": Anthropic,
+}
 
 
-def responder(llm: str) -> Responder:
-    """CONSOLE_LLM の値 (config.Config.llm) に対応する応答役を返す。"""
-    return RESPONDERS[llm]
+def responder(llm: str, model: str) -> Responder:
+    """CONSOLE_LLM と CONSOLE_MODEL の値 (config.Config.llm・model) に対応する応答役を返す。"""
+    return RESPONDERS[llm](model)
