@@ -186,7 +186,7 @@ def test_page_words_every_send_failure_through_the_same_table(start_app):
     page = start_app().get("/").body.decode("utf-8")
     # 会話の領域の表示・別の会話への知らせ・知らせからの送り直しの失敗は、どれも failureReason で文言を決める。
     assert "const message = failureReason(error);" in page
-    assert "if (await stillShown(view)) showUnsent(bubble, text, message);" in page
+    assert "if (await stillShown(view)) showUnsent(bubble, text, message, origin);" in page
     assert "else showUnsentElsewhere(origin, text, message);" in page
     assert "describe(failureReason(error));" in page
     # 理由ごとの文言を、表の外で API の理由から直に決めない。
