@@ -161,6 +161,53 @@ def test_anthropic_skips_blocks_that_are_not_text(stub_urlopen, api_key):
     assert responder("anthropic").reply(FRUIT) == "前半後半"
 
 
+@pytest.mark.parametrize(("answer", "reply"), [
+    ({"stop_reason": "max_tokens", "content": [{"type": "text", "text": "前半です"}]}, "前半です\n\n" + llm.TRUNCATED_NOTE),
+    ({"stop_reason": "max_tokens", "content": [{"type": "thinking", "thinking": "..."}]}, llm.TRUNCATED_NOTE),
+    ({"stop_reason": "max_tokens", "content": []}, llm.TRUNCATED_NOTE),
+    ({"stop_reason": "refusal", "content": []}, llm.REFUSED_NOTE),
+    ({"stop_reason": "refusal", "content": [{"type": "text", "text": "一部"}]}, llm.REFUSED_NOTE + "\n\n一部"),
+    ({"stop_reason": "end_turn", "content": [{"type": "text", "text": "完成"}]}, "完成"),
+    ({"stop_reason": "stop_sequence", "content": [{"type": "text", "text": "完成"}]}, "完成"),
+], ids=["max_tokens", "max_tokens-thinking-only", "max_tokens-empty", "refusal-empty", "refusal-partial",
+        "end_turn", "stop_sequence"])
+def test_anthropic_says_when_a_reply_was_cut_off_or_refused(stub_urlopen, api_key, answer, reply):
+    stub_urlopen(answer=answer)
+    assert responder("anthropic").reply(FRUIT) == reply
+
+
+def test_the_notes_are_distinct_sentences():
+    assert llm.TRUNCATED_NOTE.strip() and llm.REFUSED_NOTE.strip()
+    assert llm.TRUNCATED_NOTE != llm.REFUSED_NOTE
+    assert "\n" not in llm.TRUNCATED_NOTE + llm.REFUSED_NOTE
+
+
+@pytest.mark.parametrize(("answer", "reply"), [
+    ({"stop_reason": "max_tokens", "content": [{"type": "text", "text": "前半です"}]}, "前半です\n\n" + llm.TRUNCATED_NOTE),
+    ({"stop_reason": "refusal", "content": [{"type": "text", "text": "一部"}]}, llm.REFUSED_NOTE + "\n\n一部"),
+], ids=["max_tokens", "refusal"])
+def test_a_cut_off_or_refused_reply_is_recorded_with_its_note_and_sent_back_as_is(stub_urlopen, api_key, answer, reply):
+    fake = stub_urlopen(answer=answer)
+    path = config.load().db_path
+    with Database(path) as db:
+        first = chat.send(db, responder("anthropic"), {"conversation_id": None, "text": FRUIT[0]["content"]})
+        assert first["messages"][-1] == {"role": "assistant", "text": reply}
+        [*_, recorded] = db.conversation(first["conversation_id"]).messages
+        assert (recorded.role, recorded.content) == ("assistant", reply)
+    with Database(path) as db:
+        assert [(m.role, m.content) for m in db.conversation(first["conversation_id"]).messages] == [
+            ("user", FRUIT[0]["content"]),
+            ("assistant", reply),
+        ]
+        chat.send(db, responder("anthropic"), {"conversation_id": first["conversation_id"], "text": "続けてください"})
+    after = json.loads(fake.calls[-1][0].data)
+    assert after["messages"] == [
+        {"role": "user", "content": FRUIT[0]["content"]},
+        {"role": "assistant", "content": reply},
+        {"role": "user", "content": "続けてください"},
+    ]
+
+
 @pytest.mark.parametrize(("error", "kind"), [
     (http_error(401), llm.KeyRejected),
     (http_error(403), llm.KeyRejected),

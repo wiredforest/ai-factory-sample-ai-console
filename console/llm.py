@@ -14,6 +14,10 @@ MAX_TOKENS = 1024
 REPLY_TIMEOUT_S = 30
 CHECK_TIMEOUT_S = 5
 
+# stop_reason ごとに応答の本文へ添える一文。end_turn・stop_sequence の応答には何も添えない。
+TRUNCATED_NOTE = "[この応答は長さの上限に達したため、ここで途中で切れています]"
+REFUSED_NOTE = "[AI はこの依頼に答えるのを断りました]"
+
 
 class Message(TypedDict):
     role: Literal["user", "assistant"]
@@ -64,10 +68,12 @@ class Anthropic:
         body = {"model": self.model, "max_tokens": MAX_TOKENS, "messages": list(messages)}
         answer = call("POST", "/messages", REPLY_TIMEOUT_S, body)
         try:
-            content = json.loads(answer)["content"]
-            return "".join(block["text"] for block in content if block["type"] == "text")
+            data = json.loads(answer)
+            text = "".join(block["text"] for block in data["content"] if block["type"] == "text")
+            stop_reason = data.get("stop_reason")
         except (ValueError, KeyError, TypeError) as e:
             raise Unreachable(f"AI に繋がりません (応答の形が想定外です: {type(e).__name__})") from e
+        return noted(text, stop_reason)
 
     def reachable(self) -> bool:
         try:
@@ -75,6 +81,15 @@ class Anthropic:
         except Unreachable:
             return False
         return True
+
+
+def noted(text: str, stop_reason: object) -> str:
+    """途中で切れた応答には後に、断られた応答には先に、そのことを告げる一文を空行で分けて添える。"""
+    if stop_reason == "max_tokens":
+        return "\n\n".join(part for part in (text, TRUNCATED_NOTE) if part)
+    if stop_reason == "refusal":
+        return "\n\n".join(part for part in (REFUSED_NOTE, text) if part)
+    return text
 
 
 def call(method: str, path: str, timeout: float, body: object = None) -> bytes:
