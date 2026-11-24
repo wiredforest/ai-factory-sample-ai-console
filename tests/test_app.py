@@ -275,3 +275,20 @@ def test_page_shows_code_blocks_as_uninterpreted_monospace_text_inside_the_bubbl
     assert "overflow-x: auto;" in rule[1]
     assert "background:" in rule[1]
     assert re.search(r"\.bubble \.text pre\.markdown \{[^}]*background:", page)
+
+
+def test_page_keeps_the_text_after_the_fence_language_visible_above_the_code_block(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    # 開きのフェンスの行 (```js title="a.js" 注記) の、言語の語の後ろの文字も吹き出しから消さない。
+    # 言語は情報の最初の語で、それより後ろがあれば、情報を書かれたまま文字としてブロックの上に出す。
+    assert "const info = opening[3].trim();" in page
+    assert "info, lang: info.split(/\\s+/)[0]," in page
+    assert "if (fence.info !== fence.lang) {" in page
+    assert 'info.className = "code-info";' in page
+    assert "info.textContent = fence.info;" in page
+    assert page.index("blocks.push(info);") < page.index("blocks.push(codeBlock(fence));")
+    # 画面に見えるように出す (隠さない)。
+    rule = re.search(r"\.bubble \.text \.code-info \{([^}]*)\}", page)
+    assert rule
+    assert "display: none" not in rule[1]
+    assert "visibility" not in rule[1]

@@ -54,6 +54,8 @@
   .bubble .text pre { padding: 0.5rem 0.75rem; border-radius: 0.375rem; background: #f3f4f6; color: #1f2328; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.875em; white-space: pre; overflow-wrap: normal; overflow-x: auto; }
   .bubble .text pre.markdown { background: #fdf6e3; color: #5c4400; }
   .bubble .text pre code { font: inherit; }
+  .bubble .text .code-info { color: #57606a; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8em; }
+  .bubble .text .code-info + pre { margin-top: 0.25em; }
   .bubble.user { align-self: flex-end; background: #d7ecff; }
   .bubble.assistant { align-self: flex-start; background: #fff; border: 1px solid #ddd; }
   #messages .error { align-self: flex-end; margin: 0; color: #c62828; font-weight: bold; }
@@ -293,7 +295,7 @@
     const blocks = [];
     // 今の段落。空行と見出しとフェンスで閉じる。
     let paragraph = null;
-    // 開いているフェンス。記号の並び (```` ``` ```` など) と、コードブロックなら開きの行・字下げ・言語・中身の行を持つ。
+    // 開いているフェンス。記号の並び (```` ``` ```` など) と、コードブロックなら開きの行・字下げ・情報 (フェンスの後の文字)・言語 (その最初の語)・中身の行を持つ。
     // 閉じるまで、または応答の終わりまで続く。
     let fence = null;
     for (const line of text.split(/\r?\n/)) {
@@ -301,8 +303,18 @@
         const closing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
         const closes = closing && closing[1][0] === fence.marker[0] && closing[1].length >= fence.marker.length;
         if (fence.lines) {
-          if (closes) blocks.push(codeBlock(fence));
-          else fence.lines.push(line);
+          if (closes) {
+            // 言語の語の後ろに書かれた文字 (`title="a.js"` など) は解釈しないが、失わないようにブロックの上に書かれたまま出す。
+            if (fence.info !== fence.lang) {
+              const info = document.createElement("p");
+              info.className = "code-info";
+              info.textContent = fence.info;
+              blocks.push(info);
+            }
+            blocks.push(codeBlock(fence));
+          } else {
+            fence.lines.push(line);
+          }
         } else {
           paragraph.append(document.createElement("br"), line);
         }
@@ -314,7 +326,8 @@
       }
       const opening = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line);
       if (opening && !(opening[2][0] === "`" && opening[3].includes("`"))) {
-        fence = { marker: opening[2], line, indent: opening[1].length, lang: opening[3].trim().split(/\s+/)[0], lines: [] };
+        const info = opening[3].trim();
+        fence = { marker: opening[2], line, indent: opening[1].length, info, lang: info.split(/\s+/)[0], lines: [] };
         paragraph = null;
         continue;
       }
