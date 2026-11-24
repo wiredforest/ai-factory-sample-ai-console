@@ -6,12 +6,14 @@ import os
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Sequence
+from datetime import date
 from typing import Literal, Protocol, TypedDict
 
 API_URL = "https://api.anthropic.com/v1"
 API_VERSION = "2023-06-01"
-MAX_TOKENS = 1024
-REPLY_TIMEOUT_S = 30
+# Haiku 5.5 は考えてから答え、その分も max_tokens を使う。検索に時間がかかり、ストリーミングはしないので長く待つ。
+MAX_TOKENS = 4096
+REPLY_TIMEOUT_S = 90
 CHECK_TIMEOUT_S = 5
 
 # stop_reason ごとに応答の本文へ添える一文。end_turn・stop_sequence の応答には何も添えない。
@@ -60,12 +62,27 @@ class FakeDown:
         return False
 
 
+def today() -> date:
+    """アプリを動かしている手元の今日の日付。"""
+    return date.today()
+
+
+def system_prompt() -> str:
+    """送るたびに今日の日付を求めて、要求の最上位の system に入れる短い指示を作る。記録には残さない。"""
+    return f"今日の日付は {today().isoformat()} です。日本語で簡潔に答えてください。"
+
+
 class Anthropic:
     def __init__(self, model: str) -> None:
         self.model = model
 
     def reply(self, messages: Sequence[Message]) -> str:
-        body = {"model": self.model, "max_tokens": MAX_TOKENS, "messages": list(messages)}
+        body = {
+            "model": self.model,
+            "max_tokens": MAX_TOKENS,
+            "system": system_prompt(),
+            "messages": list(messages),
+        }
         answer = call("POST", "/messages", REPLY_TIMEOUT_S, body)
         try:
             data = json.loads(answer)
