@@ -329,7 +329,8 @@ def test_page_has_a_new_conversation_button_that_only_clears_the_view(start_app)
 
 def test_page_says_when_the_ai_is_unreachable_and_puts_the_text_back(start_app):
     page = start_app().get("/").body.decode("utf-8")
-    assert 'error === "llm_unavailable" ? "AI に繋がりません"' in page
+    assert 'llm_unavailable: "AI に繋がりません",' in page
+    assert "return failureReasons[error] ?? " in page
     assert "。もう一度送信できます。" in page
     assert 'notice.className = "error"' in page
     assert "composerText.value = text" in page
