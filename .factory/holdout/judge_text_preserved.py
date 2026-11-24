@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Judge for H-42 and H-47: the AI bubble keeps every character of the reply.
+"""Judge for H-37, H-42 and H-47: the AI bubble keeps every character of the reply.
 
 The fake responder replies `fake reply #<n>: <sent>`. This judge compares what the AI bubble
 shows (its visible text, e.g. innerText) with that reply text.
 
 Input (JSON, from a file path argument or stdin):
 {
-  "scenario": "H-42",                      # or "H-47"; decides which case labels are required
+  "scenario": "H-42",                      # or "H-37", "H-47"; decides which case labels are required
   "cases": [
     {"label": "U",                         # case label named in the scenario
      "mode": "verbatim",                   # "verbatim" or "markers" (the scenario says which)
@@ -24,11 +24,19 @@ Both modes ignore whitespace (spaces, tabs, line breaks), so layout is judged by
 
 PASS if every required case matches. FAIL if any case differs (the first difference is shown).
 INCONCLUSIVE if a required case is missing or a case lacks a field.
+
+H-37 also checks the <n> sequence: cases 2..5 carry <n> of case 1 plus 1, 2, 3, 4; each
+"<k>-reopened" case carries the same <n> as case <k>; case 6 carries <n> of case 5 plus 1.
 """
 import json
 import sys
 
 REQUIRED = {
+    "H-37": {
+        **{str(k): "markers" for k in range(1, 6)},
+        **{f"{k}-reopened": "markers" for k in range(1, 6)},
+        "6": "markers",
+    },
     "H-42": {"U": "verbatim", "image-only": "verbatim"},
     "H-47": {
         "unclosed-fence": "markers",
@@ -99,6 +107,15 @@ def judge(data):
             f"{label}: differs at character {i} ({mode}); expected ...{expected[max(0, i - 15):i + 25]!r}"
             f" but shown ...{actual[max(0, i - 15):i + 25]!r} (lengths {len(expected)} vs {len(actual)})"
         )
+    if scenario == "H-37":
+        n = {label: by_label[label]["n"] for label in REQUIRED[scenario]}
+        want = {str(k): n["1"] + k - 1 for k in range(1, 6)}
+        want.update({f"{k}-reopened": n[str(k)] for k in range(1, 6)})
+        want["6"] = n["5"] + 1
+        for label, w in want.items():
+            if n[label] != w:
+                verdict = "FAIL"
+                reasons.append(f"{label}: <n> is {n[label]} but should be {w}")
     return verdict, reasons
 
 
