@@ -58,6 +58,7 @@
   .bubble .text .code-info + pre { margin-top: 0.25em; }
   .bubble .text :is(ul, ol) { padding-left: 2em; }
   .bubble .text li > * { margin: 0.25em 0 0; }
+  .bubble .text :not(pre) > code { padding: 0.1em 0.3em; border-radius: 0.25em; background: #f3f4f6; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.875em; }
   .bubble.user { align-self: flex-end; background: #d7ecff; }
   .bubble.assistant { align-self: flex-start; background: #fff; border: 1px solid #ddd; }
   #messages .error { align-self: flex-end; margin: 0; color: #c62828; font-weight: bold; }
@@ -294,6 +295,7 @@
 
   // AI の応答の原文を Markdown のブロックとして読み、吹き出しの本文に並べる要素を返す。記録は原文のままで、出すたびにここで組み立てる。
   // 解釈するのは見出しと段落 (段落の中の改行は br) と箇条書きとコードブロックだけ。ほかの書式や HTML のタグは、書かれたままの文字として段落に入れる。
+  // 見出し・段落・項目の各行の中は inlineNodes で強調・斜体・打ち消し線・インラインのコードを解釈する。
   // 箇条書きは、印 (-・*・+ か、数字と .) の後に空白が続く行。前の項目の印より 2 文字以上深く字下げした項目は、その項目の中の入れ子のリストにする。
   // 入れ子は何段でも同じ規則で深くする。
   // 行頭のフェンス (``` や ~~~) から閉じるフェンスまではコードブロック (pre の中の code) にし、中身は解釈せずに文字のまま入れる。
@@ -360,7 +362,7 @@
       const item = /^([ \t]*)([-*+]|\d{1,9}\.)[ \t]+(\S.*)$/.exec(line);
       if (heading) {
         const element = document.createElement(`h${heading[1].length}`);
-        element.textContent = heading[2].trimEnd();
+        element.append(...inlineNodes(heading[2].trimEnd()));
         blocks.push(element);
         paragraph = null;
         lists = [];
@@ -399,24 +401,24 @@
           lists.push(level);
         }
         level.item = document.createElement("li");
-        level.item.append(item[3]);
+        level.item.append(...inlineNodes(item[3]));
         level.list.append(level.item);
         paragraph = level.item;
       } else if (!line.trim()) {
         paragraph = null;
       } else if (paragraph) {
         // 空行を挟まずに続く行は、段落でも項目でも、その続き。項目の続きの行の字下げは出さない。
-        paragraph.append(document.createElement("br"), lists.length ? line.trimStart() : line);
+        paragraph.append(document.createElement("br"), ...inlineNodes(lists.length ? line.trimStart() : line));
       } else {
         // 空行の後の行は、項目の印より 2 文字以上深く字下げしていれば、その項目の中の段落。そうでなければ箇条書きを閉じる。
         const indent = indentWidth(/^[ \t]*/.exec(line)[0]);
         while (lists.length && indent < lists.at(-1).indent + 2) lists.pop();
         paragraph = document.createElement("p");
         if (lists.length) {
-          paragraph.append(line.trimStart());
+          paragraph.append(...inlineNodes(line.trimStart()));
           lists.at(-1).item.append(paragraph);
         } else {
-          paragraph.append(line);
+          paragraph.append(...inlineNodes(line));
           blocks.push(paragraph);
         }
       }
@@ -450,6 +452,102 @@
     let width = 0;
     for (const char of indent) width = char === "\t" ? width + 4 - (width % 4) : width + 1;
     return width;
+  }
+
+  // 1 行の文字を、強調 (** か __ → strong)・斜体 (* か _ → em)・打ち消し線 (~~ → del)・インラインのコード (` → code) を
+  // 解釈した文字と要素の並びにする。対になる記号が無い記号は、書かれたままの文字で残す。記号のほかの文字は足しも消しもしない。
+  // インラインのコードは同じ数の ` で閉じたところまでで、中身は解釈せずに文字のまま入れる。
+  // 記号は、後ろに空白でない文字が続けば開けて、前が空白でない文字なら閉じられる。_ は語の中 (snake_case_name) では開きも閉じもしない。
+  function inlineNodes(line) {
+    // 文字と code 要素と、まだ対になっていない記号の並び ({ char, count, canOpen, canClose })。
+    const items = [];
+    let text = "";
+    let i = 0;
+    while (i < line.length) {
+      const char = line[i];
+      if (!"`*_~".includes(char)) {
+        text += char;
+        i++;
+        continue;
+      }
+      let end = i;
+      while (line[end] === char) end++;
+      const run = line.slice(i, end);
+      if (char === "`") {
+        const close = codeSpanEnd(line, end, run.length);
+        if (close < 0) {
+          text += run;
+          i = end;
+          continue;
+        }
+        const code = document.createElement("code");
+        code.textContent = line.slice(end, close);
+        if (text) items.push(text);
+        items.push(code);
+        text = "";
+        i = close + run.length;
+        continue;
+      }
+      const before = line[i - 1] ?? " ";
+      const after = line[end] ?? " ";
+      let canOpen = !/\s/.test(after);
+      let canClose = !/\s/.test(before);
+      if (char === "_") {
+        canOpen &&= !/[\p{L}\p{N}]/u.test(before);
+        canClose &&= !/[\p{L}\p{N}]/u.test(after);
+      }
+      if (char === "~" && run.length !== 2) canOpen = canClose = false;
+      if (canOpen || canClose) {
+        if (text) items.push(text);
+        items.push({ char, count: run.length, canOpen, canClose });
+        text = "";
+      } else {
+        text += run;
+      }
+      i = end;
+    }
+    if (text) items.push(text);
+    // 閉じられる記号ごとに、手前で一番近い同じ記号の開きと対にして、その間を要素で包む。** と * が重なれば (***) 2 つずつ先に使う。
+    let c = 0;
+    while (c < items.length) {
+      const closer = items[c];
+      const o = closer.canClose ? items.findLastIndex((item, k) => k < c && item.char === closer.char && item.canOpen) : -1;
+      if (o < 0) {
+        c++;
+        continue;
+      }
+      const opener = items[o];
+      const used = Math.min(2, opener.count, closer.count);
+      const element = document.createElement(closer.char === "~" ? "del" : used === 2 ? "strong" : "em");
+      // 間に残った記号は、もう外と対にしない (重なった書式は作らない)。
+      element.append(...items.slice(o + 1, c).map(literal));
+      items.splice(o + 1, c - o - 1, element);
+      c = o + 2;
+      opener.count -= used;
+      closer.count -= used;
+      if (!opener.count) {
+        items.splice(o, 1);
+        c--;
+      }
+      if (!closer.count) items.splice(c, 1);
+    }
+    return items.map(literal);
+  }
+
+  // まだ対になっていない記号は、書かれたままの文字に戻す。
+  function literal(item) {
+    return item.char ? item.char.repeat(item.count) : item;
+  }
+
+  // from から先で、ちょうど count 個の ` が並ぶところの位置。無ければ -1。
+  function codeSpanEnd(line, from, count) {
+    for (let at = line.indexOf("`", from); at >= 0; at = line.indexOf("`", at)) {
+      let end = at;
+      while (line[end] === "`") end++;
+      if (end - at === count) return at;
+      at = end;
+    }
+    return -1;
   }
 
   function addBubble(role, text) {
