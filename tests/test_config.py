@@ -12,3 +12,15 @@ def test_accepts_each_llm_choice(monkeypatch, llm):
 def test_llm_defaults_to_anthropic(monkeypatch):
     monkeypatch.delenv("CONSOLE_LLM")
     assert config.load().llm == "anthropic"
+
+
+@pytest.mark.parametrize(("value", "model"), [
+    (None, "claude-haiku-5-5"),
+    ("", "claude-haiku-5-5"),
+    ("claude-opus-5-5", "claude-opus-5-5"),
+    ("no-such-model", "no-such-model"),
+], ids=["unset", "empty", "opus", "unknown-name-is-not-checked"])
+def test_model_comes_from_console_model(monkeypatch, value, model):
+    if value is not None:
+        monkeypatch.setenv("CONSOLE_MODEL", value)
+    assert config.load().model == model

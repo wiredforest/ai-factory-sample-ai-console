@@ -22,6 +22,7 @@ def console_env(monkeypatch, tmp_path):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("FACTORY_RUNTIME_CANDIDATE", raising=False)
     monkeypatch.setenv("CONSOLE_LLM", "fake")
+    monkeypatch.delenv("CONSOLE_MODEL", raising=False)
     monkeypatch.setenv("CONSOLE_DB_PATH", str(tmp_path / "console.sqlite3"))
     monkeypatch.setattr(urllib.request, "urlopen", refuse_network)
 
