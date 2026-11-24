@@ -380,3 +380,113 @@ def test_calling_urlopen_without_a_stub_fails_the_test(api_key):
         urllib.request.urlopen("https://api.anthropic.com/v1/models")
     with pytest.raises(pytest.fail.Exception):
         responder("anthropic").reply(FRUIT)
+
+
+def searched(*content: dict, stop_reason: str = "end_turn") -> dict:
+    """検索を 1 回使った応答。server_tool_use と web_search_tool_result (結果は results) の後に content を続ける。"""
+    return {"stop_reason": stop_reason, "content": [
+        {"type": "server_tool_use", "id": "srvtoolu_01", "name": "web_search", "input": {"query": "びわ"}},
+        {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_01", "content": [
+            {"type": "web_search_result", "url": "https://r.example/1", "title": "R1", "encrypted_content": "x"},
+        ]},
+        *content,
+    ]}
+
+
+def location(url: str, title: str | None) -> dict:
+    return {"type": "web_search_result_location", "url": url, "title": title, "encrypted_index": "x", "cited_text": "..."}
+
+
+CITED = searched(
+    {"type": "text", "text": "びわの旬は"},
+    {"type": "text", "text": "初夏です", "citations": [
+        location("https://a.example/1", "A"),
+        location("https://b.example/2", ""),
+    ]},
+    {"type": "text", "text": "。", "citations": [location("https://a.example/1", "A")]},
+)
+CITED_REPLY = "びわの旬は初夏です。\n\n出典:\n- A (https://a.example/1)\n- https://b.example/2"
+
+
+def test_a_searched_reply_lists_its_cited_sources_once_each_after_the_text(stub_urlopen, api_key):
+    stub_urlopen(answer=CITED)
+    reply = responder("anthropic").reply(FRUIT)
+    assert reply == CITED_REPLY
+    assert reply.count("https://a.example/1") == 1
+
+
+def test_a_searched_reply_without_citations_lists_the_search_results_in_order(stub_urlopen, api_key):
+    stub_urlopen(answer={"stop_reason": "end_turn", "content": [
+        {"type": "server_tool_use", "id": "srvtoolu_01", "name": "web_search", "input": {"query": "びわ"}},
+        {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_01", "content": [
+            {"type": "web_search_result", "url": "https://c.example/3", "title": "C", "encrypted_content": "x"},
+            {"type": "web_search_result", "url": "https://d.example/4", "title": "", "encrypted_content": "x"},
+        ]},
+        {"type": "server_tool_use", "id": "srvtoolu_02", "name": "web_search", "input": {"query": "びわ 旬"}},
+        {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_02", "content": [
+            {"type": "web_search_result", "url": "https://c.example/3", "title": "C", "encrypted_content": "x"},
+            {"type": "web_search_result", "url": "https://e.example/5", "title": "E", "encrypted_content": "x"},
+        ]},
+        {"type": "text", "text": "初夏です"},
+    ]})
+    assert responder("anthropic").reply(FRUIT) == (
+        "初夏です\n\n出典:\n- C (https://c.example/3)\n- https://d.example/4\n- E (https://e.example/5)"
+    )
+
+
+@pytest.mark.parametrize("content", [
+    [{"type": "text", "text": "前半"}, {"type": "text", "text": "後半"}],
+    [{"type": "text", "text": "前半", "citations": [location("https://a.example/1", "A")]},
+     {"type": "text", "text": "後半", "citations": None}],
+    [],
+], ids=["plain", "citations-without-a-search", "empty"])
+def test_a_reply_without_a_search_is_only_its_text(stub_urlopen, api_key, content):
+    stub_urlopen(answer={"stop_reason": "end_turn", "content": content})
+    reply = responder("anthropic").reply(FRUIT)
+    assert "出典:" not in reply
+    assert reply == "".join(block["text"] for block in content)
+
+
+def test_a_failed_search_adds_no_empty_sources(stub_urlopen, api_key):
+    stub_urlopen(answer={"stop_reason": "end_turn", "content": [
+        {"type": "server_tool_use", "id": "srvtoolu_01", "name": "web_search", "input": {"query": "びわ"}},
+        {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_01",
+         "content": {"type": "web_search_tool_result_error", "error_code": "unavailable"}},
+        {"type": "text", "text": "検索できませんでした"},
+    ]})
+    assert responder("anthropic").reply(FRUIT) == "検索できませんでした"
+
+
+def test_the_sources_come_before_the_note_of_a_cut_off_reply(stub_urlopen, api_key):
+    stub_urlopen(answer=searched({"type": "text", "text": "途中", "citations": [location("https://a.example/1", "A")]},
+                                 stop_reason="max_tokens"))
+    assert responder("anthropic").reply(FRUIT) == "途中\n\n出典:\n- A (https://a.example/1)\n\n" + llm.TRUNCATED_NOTE
+
+
+def test_a_searched_reply_with_no_text_is_only_its_sources(stub_urlopen, api_key):
+    stub_urlopen(answer=searched())
+    assert responder("anthropic").reply(FRUIT) == "出典:\n- R1 (https://r.example/1)"
+
+
+def test_a_title_keeps_its_source_on_one_line(stub_urlopen, api_key):
+    stub_urlopen(answer=searched({"type": "text", "text": "答え", "citations": [
+        location("https://a.example/1", "びわ\nの旬"),
+        location("https://b.example/2", None),
+    ]}))
+    assert responder("anthropic").reply(FRUIT) == "答え\n\n出典:\n- びわ の旬 (https://a.example/1)\n- https://b.example/2"
+
+
+def test_a_searched_reply_is_recorded_with_its_sources_and_sent_back_as_is(stub_urlopen, api_key):
+    fake = stub_urlopen(answer=CITED)
+    path = config.load().db_path
+    with Database(path) as db:
+        first = chat.send(db, responder("anthropic"), {"conversation_id": None, "text": FRUIT[0]["content"]})
+        assert first["messages"][-1] == {"role": "assistant", "text": CITED_REPLY}
+    with Database(path) as db:
+        assert [(m.role, m.content) for m in db.conversation(first["conversation_id"]).messages] == [
+            ("user", FRUIT[0]["content"]),
+            ("assistant", CITED_REPLY),
+        ]
+        chat.send(db, responder("anthropic"), {"conversation_id": first["conversation_id"], "text": "ほかには"})
+    after = json.loads(fake.calls[-1][0].data)
+    assert after["messages"][1] == {"role": "assistant", "content": CITED_REPLY}
