@@ -269,6 +269,13 @@
     return view === chatView;
   }
 
+  // 送っている間に別の会話を開いてから、送った会話を開き直していまも出しているか。stillShown の後に呼ぶ。
+  // 開き直した領域は記録から読み直したもので、送れなかった吹き出しは無い。出し直して、同じ会話のままの失敗として入力欄に戻す (#48)。
+  // 新しい会話 (null) は開き直せないので、いま新しい会話を出していても送った会話とは別のもの。
+  function reopened(origin) {
+    return origin.conversationId !== null && origin.conversationId === currentConversationId;
+  }
+
   function addBubble(role, text) {
     const bubble = document.createElement("div");
     bubble.className = `bubble ${role}`;
@@ -310,7 +317,7 @@
     if (!composerText.value) composerText.value = text;
   }
 
-  // 送っている間に別の会話を開いていたら、送れなかったことを会話の領域の外に知らせる。
+  // 送っている間に別の会話を開き、そのままなら、送れなかったことを会話の領域の外に知らせる。
   // 開いた会話の入力欄にも吹き出しにも入れないので、開いた会話へ誤って送られない。会話を切り替えても消えない。
   function showUnsentElsewhere(origin, text, message) {
     const item = document.createElement("li");
@@ -401,14 +408,16 @@
       } catch (error) {
         // サーバに届かない。AI に繋がらないときと同じく、送った本文は記録されていない。
         if (await stillShown(view)) showUnsent(bubble, text, "AI に繋がりません");
+        else if (reopened(origin)) showUnsent(addBubble("user", text), text, "AI に繋がりません");
         else showUnsentElsewhere(origin, text, "AI に繋がりません");
         throw error;
       }
       if (!response.ok) {
         const error = await errorOf(response);
         const message = failureReason(error);
-        // 送っている間に別の会話を開いていたら、送れなかった表示も本文も、開いた会話には出さない。
+        // 送っている間に別の会話を開いたままなら、送れなかった表示も本文も、開いた会話には出さない。
         if (await stillShown(view)) showUnsent(bubble, text, message);
+        else if (reopened(origin)) showUnsent(addBubble("user", text), text, message);
         else showUnsentElsewhere(origin, text, message);
         // AI に繋がらなかったことは、どの会話を出していてもサーバの状態に知らせる。
         if (error === "llm_unavailable") document.dispatchEvent(new CustomEvent("llm-reached", { detail: { ok: false } }));

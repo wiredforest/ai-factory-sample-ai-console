@@ -239,6 +239,31 @@ def test_a_send_result_waits_until_the_conversation_chosen_from_the_history_has_
     assert opened.index("chatView++;") < opened.index("settleOpening();")
 
 
+def test_a_failed_send_returns_to_the_composer_when_its_conversation_was_reopened(start_app):
+    # 送信中に別の会話を選んでから元の会話を開き直していたら、失敗は同じ会話のものとして入力欄に戻す (#48)。
+    page = start_app().get("/").body.decode("utf-8")
+    reopened = re.search(r"function reopened\(origin\) \{\n(.*?)\n  \}\n", page, re.DOTALL).group(1)
+    # 開き直した会話が送った会話のときだけ。新しい会話 (null) から送ったものは、いま新しい会話を出していても別の会話。
+    assert reopened.strip() == "return origin.conversationId !== null && origin.conversationId === currentConversationId;"
+    send = re.search(r"async function sendMessage\(\) \{\n(.*?)\n  \}\n", page, re.DOTALL).group(1)
+    branches = re.findall(
+        r"if \(await stillShown\(view\)\) showUnsent\(bubble, text, (.+?)\);\n"
+        r" +else if \(reopened\(origin\)\) showUnsent\(addBubble\(\"user\", text\), text, (.+?)\);\n"
+        r" +else showUnsentElsewhere\(origin, text, (.+?)\);",
+        send,
+    )
+    # サーバに届かないときも、!response.ok のときも、待ってから決める。開き直した領域には吹き出しを出し直し、それ以外は領域の外に知らせる。
+    assert [set(b) for b in branches] == [{'"AI に繋がりません"'}, {"message"}]
+    # 開き直した会話の送り直しは、今の会話 (= 送った会話) の id へ送られ、前の失敗の吹き出しを置き換える。
+    assert "body: JSON.stringify({ conversation_id: currentConversationId, text })," in send
+    assert send.index("unsent.forEach((element) => element.remove());") < send.index('const bubble = addBubble("user", text);')
+    show_unsent = re.search(r"function showUnsent\(bubble, text, message\) \{\n(.*?)\n  \}\n", page, re.DOTALL).group(1)
+    assert "unsent = [bubble, notice];" in show_unsent
+    assert "if (!composerText.value) composerText.value = text;" in show_unsent
+    # 成功したときは、今までどおり送ったときの領域を出したままのときだけ応答を足す。
+    assert "reopened(" not in send.split("const { conversation_id, messages } = await response.json();", 1)[1]
+
+
 def history_section(page: str) -> str:
     return re.search(r'<section id="history">.*?</section>', page, re.DOTALL).group(0)
 
