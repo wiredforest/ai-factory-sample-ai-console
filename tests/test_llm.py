@@ -56,9 +56,12 @@ def stub_urlopen(monkeypatch):
     return install
 
 
+LEAKY_KEY = "sk-ant-test-LEAKCHECK-0123456789"
+
+
 @pytest.fixture
 def api_key(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", LEAKY_KEY)
 
 
 def http_error(code: int) -> urllib.error.HTTPError:
@@ -99,7 +102,7 @@ def test_anthropic_posts_the_whole_history_and_joins_the_text(stub_urlopen, api_
     [(request, timeout)] = fake.calls
     assert request.get_method() == "POST"
     assert request.full_url == "https://api.anthropic.com/v1/messages"
-    assert request.get_header("X-api-key") == "test-key"
+    assert request.get_header("X-api-key") == LEAKY_KEY
     assert request.get_header("Anthropic-version") == "2023-06-01"
     assert request.get_header("Content-type") == "application/json"
     body = json.loads(request.data)
@@ -134,7 +137,7 @@ def test_anthropic_failures_are_told_apart_without_the_key(stub_urlopen, api_key
     with pytest.raises(llm.Unreachable) as raised:
         llm.responder("anthropic").reply(FRUIT)
     assert type(raised.value) is kind
-    assert "test-key" not in "".join(traceback.format_exception(raised.value))
+    assert "LEAKCHECK" not in "".join(traceback.format_exception(raised.value))
 
 
 def test_anthropic_strips_the_line_break_around_the_key(stub_urlopen, monkeypatch):
@@ -164,8 +167,9 @@ def test_anthropic_key_unfit_for_a_header_becomes_unreachable_without_the_key(st
 ], ids=["not-json", "no-content", "content-null", "text-block-without-text"])
 def test_anthropic_reply_of_an_unexpected_shape_becomes_unreachable(stub_urlopen, api_key, answer):
     stub_urlopen(answer=answer)
-    with pytest.raises(llm.Unreachable):
+    with pytest.raises(llm.Unreachable) as raised:
         llm.responder("anthropic").reply(FRUIT)
+    assert "LEAKCHECK" not in "".join(traceback.format_exception(raised.value))
 
 
 @pytest.mark.parametrize(("stub", "reachable"), [
@@ -179,7 +183,7 @@ def test_anthropic_check_lists_the_models(stub_urlopen, api_key, stub, reachable
     [(request, timeout)] = fake.calls
     assert request.get_method() == "GET"
     assert request.full_url == "https://api.anthropic.com/v1/models"
-    assert request.get_header("X-api-key") == "test-key"
+    assert request.get_header("X-api-key") == LEAKY_KEY
     assert timeout == 5
 
 

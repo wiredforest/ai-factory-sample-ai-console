@@ -5,12 +5,11 @@ import re
 import socket
 import sqlite3
 import threading
-import traceback
 import urllib.error
 import urllib.request
 
 import pytest
-from test_llm import FakeUrlopen, http_error
+from test_llm import LEAKY_KEY, FakeUrlopen, http_error
 
 from console import chat, llm
 from console.db import Database
@@ -159,7 +158,6 @@ def test_anthropic_without_key_is_unavailable_without_going_out(start_app, db, m
         assert counts(db) == (0, 0)
 
 
-LEAKY_KEY = "sk-ant-test-LEAKCHECK-0123456789"
 FAILURE_MESSAGES = {
     "llm_key_rejected": "AI の鍵 (ANTHROPIC_API_KEY) が正しくありません",
     "llm_busy": "AI が混んでいます。少し待ってから送り直してください",
@@ -206,13 +204,9 @@ def test_a_failed_send_says_why_records_nothing_and_never_shows_the_key(db, monk
         monkeypatch.setattr(urllib.request, "urlopen", FakeUrlopen(**stub))
     conversation = db.add_exchange(None, FIRST, f"fake reply #1: {FIRST}")
     before = counts(db)
-    responder = llm.responder(llm_name)
 
-    with pytest.raises(llm.Unreachable) as raised:
-        responder.reply([{"role": "user", "content": SECOND}])
-    assert "LEAKCHECK" not in "".join(traceback.format_exception(raised.value))
     for conversation_id in (None, conversation):
-        status, body = post_in_process(responder, conversation_id)
+        status, body = post_in_process(llm.responder(llm_name), conversation_id)
         assert (status, json.loads(body)) == (503, {"error": error, "message": FAILURE_MESSAGES[error]})
         assert "LEAKCHECK" not in body.decode("utf-8")
     assert counts(db) == before
