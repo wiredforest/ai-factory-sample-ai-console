@@ -294,6 +294,7 @@
 
   // AI の応答の原文を Markdown のブロックとして読み、吹き出しの本文に並べる要素を返す。記録は原文のままで、出すたびにここで組み立てる。
   // 解釈するのは見出しと段落 (段落の中の改行は br) と箇条書きとコードブロックだけ。ほかの書式や HTML のタグは、書かれたままの文字として段落に入れる。
+  // 見出し・段落・項目の各行の中のリンク [文字](URL) だけは、linkText で「文字 (URL)」という文字にする。
   // 箇条書きは、印 (-・*・+ か、数字と .) の後に空白が続く行。前の項目の印より 2 文字以上深く字下げした項目は、その項目の中の入れ子のリストにする。
   // 入れ子は何段でも同じ規則で深くする。
   // 行頭のフェンス (``` や ~~~) から閉じるフェンスまではコードブロック (pre の中の code) にし、中身は解釈せずに文字のまま入れる。
@@ -360,7 +361,7 @@
       const item = /^([ \t]*)([-*+]|\d{1,9}\.)[ \t]+(\S.*)$/.exec(line);
       if (heading) {
         const element = document.createElement(`h${heading[1].length}`);
-        element.textContent = heading[2].trimEnd();
+        element.textContent = linkText(heading[2].trimEnd());
         blocks.push(element);
         paragraph = null;
         lists = [];
@@ -399,24 +400,24 @@
           lists.push(level);
         }
         level.item = document.createElement("li");
-        level.item.append(item[3]);
+        level.item.append(linkText(item[3]));
         level.list.append(level.item);
         paragraph = level.item;
       } else if (!line.trim()) {
         paragraph = null;
       } else if (paragraph) {
         // 空行を挟まずに続く行は、段落でも項目でも、その続き。項目の続きの行の字下げは出さない。
-        paragraph.append(document.createElement("br"), lists.length ? line.trimStart() : line);
+        paragraph.append(document.createElement("br"), linkText(lists.length ? line.trimStart() : line));
       } else {
         // 空行の後の行は、項目の印より 2 文字以上深く字下げしていれば、その項目の中の段落。そうでなければ箇条書きを閉じる。
         const indent = indentWidth(/^[ \t]*/.exec(line)[0]);
         while (lists.length && indent < lists.at(-1).indent + 2) lists.pop();
         paragraph = document.createElement("p");
         if (lists.length) {
-          paragraph.append(line.trimStart());
+          paragraph.append(linkText(line.trimStart()));
           lists.at(-1).item.append(paragraph);
         } else {
-          paragraph.append(line);
+          paragraph.append(linkText(line));
           blocks.push(paragraph);
         }
       }
@@ -450,6 +451,16 @@
     let width = 0;
     for (const char of indent) width = char === "\t" ? width + 4 - (width % 4) : width + 1;
     return width;
+  }
+
+  // リンク `[文字](URL)` の書式。文字に [ と ] を含まず、URL に空白を含まない (対になった ( ) は 1 段まで) ものだけをリンクとみなし、
+  // 崩れたリンクは書かれたまま残す。前に ! がある画像の書式も、読み込まずに書かれたまま残す。
+  // ` で囲んだところ (インラインのコード) は、中にリンクの形があっても書き換えない。閉じる ` は開きとちょうど同じ数。
+  const LINK = /(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)|(?<!!)\[([^[\]]+)\]\(((?:[^()\s]|\([^()\s]*\))+)\)/g;
+
+  // 1 行の文字の中のリンクを、クリックできるリンクにせず「文字 (URL)」という文字にする。要素を作らないので、URL がどんな形 (javascript: など) でも文字として出るだけ。
+  function linkText(line) {
+    return line.replace(LINK, (match, ticks, text, url) => (ticks ? match : `${text} (${url})`));
   }
 
   function addBubble(role, text) {

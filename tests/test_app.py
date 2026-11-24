@@ -316,3 +316,43 @@ def test_page_shows_list_items_only_where_a_marker_is_followed_by_a_space(start_
     # 入れ子は親の項目の印より 2 文字以上深い字下げ。タブは 4 文字ぶん進める。
     assert "indent >= parent.indent + 2" in page
     assert 'char === "\\t" ? width + 4 - (width % 4)' in page
+
+
+def test_page_shows_links_as_text_and_leaves_images_tags_and_broken_links_as_written(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    # リンクの書式はページの JS の正規表現そのもの。Python の re でも同じ意味になる書き方なので、取り出して JS と同じ規則で置き換える。
+    found = re.search(r"const LINK = /(.+)/g;", page)
+    assert found
+    link = re.compile(found.group(1))
+    assert "(ticks ? match : `${text} (${url})`)" in page
+
+    def link_text(line):
+        return link.sub(lambda m: m[0] if m[1] else f"{m[2]} ({m[3]})", line)
+
+    # リンクは「文字 (URL)」という文字にする。URL がどんな形でも同じ。
+    assert link_text("[公式](https://example.com/a) を見て") == "公式 (https://example.com/a) を見て"
+    assert link_text("[危ない](javascript:window.mdXss=3)") == "危ない (javascript:window.mdXss=3)"
+    assert link_text("[Foo](https://en.wikipedia.org/wiki/Foo_(bar)) と [x](y)") == "Foo (https://en.wikipedia.org/wiki/Foo_(bar)) と x (y)"
+    # 本文の URL・画像・HTML のタグ・崩れたリンク・` で囲んだところは書かれたまま。
+    for line in (
+        "素の https://example.org/b も",
+        "![図](https://example.net/should-not-load.png)",
+        '<a href="https://example.com/c">タグのリンク</a>',
+        "[閉じない](https://example.com/d",
+        "[a [b] c](u)",
+        "[空白](https://example.com/e f)",
+        "[](https://example.com/f)",
+        "`[a](b)`",
+    ):
+        assert link_text(line) == line, line
+    # 対になっていない [ は書かれたまま残し、その後ろの崩れていないリンクだけを書き換える。
+    assert link_text("[a [b](u)") == "[a b (u)"
+    assert link_text("`[a](b)` と [c](d)") == "`[a](b)` と c (d)"
+    assert link_text("``[a](b)` [c](d)``") == "``[a](b)` [c](d)``"
+    # 見出し・項目・段落の各行で通す。自分の吹き出しは打ったとおり。
+    assert "element.textContent = linkText(heading[2].trimEnd());" in page
+    assert "level.item.append(linkText(item[3]));" in page
+    assert 'paragraph.append(document.createElement("br"), linkText(lists.length ? line.trimStart() : line));' in page
+    assert "paragraph.append(linkText(line.trimStart()));" in page
+    assert "paragraph.append(linkText(line));" in page
+    assert "body.textContent = text;" in page
