@@ -112,3 +112,32 @@ def test_port_in_use_with_an_unopenable_record_still_exits_2_with_one_line(start
     result = run_until_exit(port=first.port, CONSOLE_DB_PATH=str(tmp_path / "missing" / "console.sqlite3"))
     assert result.returncode == 2
     assert result.stderr.splitlines() == [f"error: ポート {first.port} はすでに使われています"]
+
+
+class AncestorsById(HTMLParser):
+    """id を持つ要素ごとに、それを囲む要素の id を集める。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.open: list[str | None] = []
+        self.ancestors: dict[str, list[str]] = {}
+
+    def handle_starttag(self, tag, attrs):
+        if tag in VOID_ELEMENTS:
+            return
+        element_id = dict(attrs).get("id")
+        if element_id is not None:
+            self.ancestors[element_id] = [i for i in self.open if i is not None]
+        self.open.append(element_id)
+
+    def handle_endtag(self, tag):
+        self.open.pop()
+
+
+def test_failures_sent_from_another_conversation_are_shown_outside_the_chat_area(start_app):
+    # 会話を切り替えると会話の領域は置き換わる。別の会話で送れなかった知らせは、その外に置かないと一緒に消える。
+    parser = AncestorsById()
+    parser.feed(start_app().get("/").body.decode("utf-8"))
+    assert "send-failures" in parser.ancestors
+    assert "chat" not in parser.ancestors["send-failures"]
+    assert "send-failures" not in parser.ancestors["messages"]
