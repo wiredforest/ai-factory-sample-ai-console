@@ -189,11 +189,9 @@ def test_page_words_every_send_failure_through_the_same_table(start_app):
     assert "if (await stillShown(view)) showUnsent(bubble, text, message);" in page
     assert "else showUnsentElsewhere(origin, text, message);" in page
     assert "describe(failureReason(error));" in page
-    # サーバに届かないときも、同じ表の llm_unavailable の文言を使う。文言を直に書かない。
-    assert page.count('"AI に繋がりません"') == 1
-    assert 'showUnsent(bubble, text, failureReason("llm_unavailable"));' in page
-    assert 'showUnsentElsewhere(origin, text, failureReason("llm_unavailable"));' in page
-    assert 'describe(failureReason("llm_unavailable"));' in page
+    # 理由ごとの文言を、表の外で API の理由から直に決めない。
+    assert page.count("failureReasons[") == 1
+    assert 'error === "llm_key_rejected"' not in page
 
 
 def test_page_marks_the_llm_down_only_when_the_ai_was_not_reached(start_app):

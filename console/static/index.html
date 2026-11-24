@@ -364,7 +364,7 @@
             body: JSON.stringify({ conversation_id: origin.conversationId, text }),
           });
         } catch (error) {
-          describe(failureReason("llm_unavailable"));
+          describe("AI に繋がりません");
           throw error;
         }
         if (!response.ok) {
@@ -416,9 +416,9 @@
         });
       } catch (error) {
         // サーバに届かない。AI に繋がらないときと同じく、送った本文は記録されていない。
-        if (await stillShown(view)) showUnsent(bubble, text, failureReason("llm_unavailable"));
-        else if (reopened(origin)) showUnsent(addBubble("user", text), text, failureReason("llm_unavailable"));
-        else showUnsentElsewhere(origin, text, failureReason("llm_unavailable"));
+        if (await stillShown(view)) showUnsent(bubble, text, "AI に繋がりません");
+        else if (reopened(origin)) showUnsent(addBubble("user", text), text, "AI に繋がりません");
+        else showUnsentElsewhere(origin, text, "AI に繋がりません");
         throw error;
       }
       if (!response.ok) {
