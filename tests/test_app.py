@@ -256,3 +256,27 @@ def test_page_never_injects_text_as_html_nor_loads_anything_from_outside(start_a
     for loader in ("<script src", "<link", "@import"):
         assert loader not in page
     assert not re.search(r"\b(?:src|href)\s*=\s*[\"'`]?https?://", page, re.IGNORECASE)
+
+
+def test_page_shows_list_items_only_where_a_marker_is_followed_by_a_space(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    # 項目の行の判定はページの JS の正規表現そのもの。Python の re でも同じ意味になる書き方なので、取り出して行に当てる。
+    found = re.search(r"const item = /(.+)/\.exec\(line\);", page)
+    assert found
+    item = re.compile(found.group(1))
+    assert item.match("- 卵").groups() == ("", "-", "卵")
+    assert item.match("* 牛乳").group(3) == "牛乳"
+    assert item.match("+ 砂糖").group(3) == "砂糖"
+    assert item.match("2. 焼く").groups() == ("", "2.", "焼く")
+    assert item.match("   - 弱火").groups() == ("   ", "-", "弱火")
+    assert item.match("\t- タブ").group(1) == "\t"
+    # 印の後に空白が無い行と、印の後に文字が無い行は箇条書きにしない。
+    for line in ("-ハイフンだけ", "1.5倍にする", "**太字**", "---", "- ", "1)まだ"):
+        assert not item.match(line), line
+    # 番号の印は ol、ほかの印は ul。項目は li。どれも createElement で組み立てる。
+    assert 'const tag = item[2].endsWith(".") ? "ol" : "ul";' in page
+    assert "document.createElement(tag)" in page
+    assert 'document.createElement("li")' in page
+    # 入れ子は親の項目の印より 2 文字以上深い字下げ。タブは 4 文字ぶん進める。
+    assert "indent >= parent.indent + 2" in page
+    assert 'char === "\\t" ? width + 4 - (width % 4)' in page
