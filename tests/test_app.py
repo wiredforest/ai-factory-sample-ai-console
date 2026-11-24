@@ -79,6 +79,8 @@ def test_page_offers_deleting_a_conversation_after_confirming(start_app):
     # 開いている会話が消えたら、会話の送受信が新しい会話を押したときと同じにする。
     assert 'new CustomEvent("conversation-deleted"' in page
     assert "if (event.detail.conversationId === currentConversationId) newConversationButton.click();" in page
+    # 開いている途中の会話を消したら開かず、会話の送受信の待ちを開けなかったときと同じに解く (送信の結果が出ないままにしない)。
+    assert re.search(r'if \(openingId === conversation\.id\) \{\n\s*openRequest\+\+;\n\s*document\.dispatchEvent\(new CustomEvent\("conversation-open-failed"\)\);', page)
 
 
 def test_listens_on_loopback_only(start_app):
@@ -127,6 +129,29 @@ def test_port_in_use_with_an_unopenable_record_still_exits_2_with_one_line(start
     result = run_until_exit(port=first.port, CONSOLE_DB_PATH=str(tmp_path / "missing" / "console.sqlite3"))
     assert result.returncode == 2
     assert result.stderr.splitlines() == [f"error: ポート {first.port} はすでに使われています"]
+
+
+def test_page_lets_the_send_result_update_the_llm_status(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    # 会話の送受信は status を直接呼ばず、document の CustomEvent で送信の結果を知らせる。
+    assert 'new CustomEvent("llm-reached", { detail: { ok: false } })' in page
+    assert 'new CustomEvent("llm-reached", { detail: { ok: true } })' in page
+    assert 'document.addEventListener("llm-reached"' in page
+    # 変えるのは「AI への接続」だけ。送信のたびに確かめ直さず、時間でも繰り返さない。
+    assert """statusList.querySelector('[data-key="llm"] .state')""" in page
+    assert page.count('fetch("/api/status")') == 1
+    assert "setInterval" not in page
+
+
+def test_page_rechecks_the_status_on_return_and_tells_an_unreachable_server_apart(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    parser = TextById()
+    parser.feed(page)
+    assert "サーバに届きません" in parser.text["status"]
+    assert "状態を読めませんでした" in parser.text["status"]
+    assert 'document.addEventListener("visibilitychange"' in page
+    # 確かめはページを開いたとき・タブに戻ったときだけ。時間で繰り返さない。
+    assert "setInterval" not in page
 
 
 class AncestorsById(HTMLParser):

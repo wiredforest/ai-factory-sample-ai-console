@@ -48,7 +48,7 @@ DEN さんが手元で、AI と短く対話し、過去の会話を開き直し�
 | HTTP サーバ | `http.server` (`ThreadingHTTPServer`) | 1 人で使う小さなアプリには足りる |
 | 画面 | 静的な HTML・CSS・素の JS が 1 枚。サーバからは JSON を返す | 外から HTTP で確かめやすい (JSON の API を直接叩ける)。ビルドの道具が要らない |
 | 会話の記録 | `sqlite3` | DEN さんの指定 (2026-11-22) |
-| AI | Anthropic Messages API を `urllib` で直接呼ぶ。model は Claude Haiku 5.5 (`claude-haiku-5-5`) | 速く、安い。将来の Web Search も同じ API のツールとして足せる。SDK は依存になるので使わない |
+| AI | Anthropic Messages API を `urllib` で直接呼ぶ。model は既定で Claude Haiku 5.5 (`claude-haiku-5-5`)。`CONSOLE_MODEL` で選べる (2026-11-24) | 速く、安い。将来の Web Search も同じ API のツールとして足せる。SDK は依存になるので使わない |
 | 開発の道具 | uv で、pytest と ruff を開発用の依存として管理する | 実行時には使わない。工場のハーネスからは `uv run …` で呼べる |
 
 ### データモデル
@@ -93,5 +93,5 @@ Spike:        最初の ticket (動く骨組み) に兼ねさせる。別に spi
 
 - [ ] 工場のランタイムホストの `{python}` に、どの Python (版) が渡されるか — 上の spike で分かる
 - [ ] CI (GitHub Actions) で uv と Python 3.14 をどう用意するか — 最初の ticket で決まる
-- [ ] Web Search をいつ足すか — PRD で未来の課題とした。足すときは Messages API のツールとして足す方向
+- [x] Web Search をいつ足すか — 2026-11-24 に決めた。Messages API の web search ツールとして足す ([追加の PRD のフェーズ 5](personal-ai-console-real-ai.prd.md) と `MISSION.md` の決定事項)
 - [ ] 履歴の一覧で会話を見分ける手掛かりに何を表示するか (PRD S7) — ticket の段階で決める
