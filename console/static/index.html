@@ -311,8 +311,8 @@
     currentConversationId = conversationId;
   });
 
-  // 会話を作らずに新しい会話にする。次の送信が conversation_id: null で送られ、成功したときに記録される。
-  function startNewConversation() {
+  // 押しただけでは会話を作らない。次の送信が conversation_id: null で送られ、成功したときに記録される。
+  newConversationButton.addEventListener("click", () => {
     chatView++;
     // 送れなかった表示も会話の領域の中にあるので、吹き出しと一緒に消える。
     chatMessages.replaceChildren();
@@ -321,12 +321,10 @@
     currentConversationId = null;
     document.dispatchEvent(new CustomEvent("conversation-new"));
     composerText.focus();
-  }
-
-  newConversationButton.addEventListener("click", startNewConversation);
-  // 開いている会話が消えたら、その id では送らない。消えた id は、次に作る会話に使い直されることがある。
+  });
+  // 開いている会話が消えたら、新しい会話を押したときと同じにする。消えた id は、次に作る会話に使い直されることがあるので、その id では送らない。
   document.addEventListener("conversation-deleted", (event) => {
-    if (event.detail.conversationId === currentConversationId) startNewConversation();
+    if (event.detail.conversationId === currentConversationId) newConversationButton.click();
   });
 
   composer.addEventListener("submit", (event) => {

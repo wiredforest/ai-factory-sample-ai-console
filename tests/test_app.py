@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 from html.parser import HTMLParser
 
@@ -73,6 +74,11 @@ def test_page_offers_deleting_a_conversation_after_confirming(start_app):
     parser = TextById()
     parser.feed(page)
     assert "会話を削除できませんでした" in parser.text["history"]
+    # 確認で取りやめたら送らず、200 を受け取ってから一覧から外す。
+    assert re.search(r"if \(!window\.confirm\(.*?\)\) return;\n.*?method: \"DELETE\".*?if \(!response\.ok\) \{.*?\}\n.*?item\.remove\(\);", page, re.DOTALL)
+    # 開いている会話が消えたら、会話の送受信が新しい会話を押したときと同じにする。
+    assert 'new CustomEvent("conversation-deleted"' in page
+    assert "if (event.detail.conversationId === currentConversationId) newConversationButton.click();" in page
 
 
 def test_listens_on_loopback_only(start_app):
