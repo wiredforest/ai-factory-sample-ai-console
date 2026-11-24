@@ -122,8 +122,12 @@ class Handler(BaseHTTPRequestHandler):
             self.reply_json(chat.send(self.server.db, self.server.responder, request))
         except chat.Rejected as e:
             self.reply_json({"error": e.error}, e.status)
+        # どれも何も記録していない。下位の型を先に捕まえる。
+        except llm.KeyRejected:
+            self.reply_json({"error": "llm_key_rejected", "message": "AI の鍵 (ANTHROPIC_API_KEY) が正しくありません"}, 503)
+        except llm.Busy:
+            self.reply_json({"error": "llm_busy", "message": "AI が混んでいます。少し待ってから送り直してください"}, 503)
         except llm.Unreachable:
-            # 何も記録していない。応答の形は S4 (#12) の ticket が決めたもの。画面の表示は #12 で足す。
             self.reply_json({"error": "llm_unavailable", "message": "AI に繋がりません"}, 503)
 
     def reply_db_unavailable(self) -> None:

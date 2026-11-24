@@ -57,9 +57,12 @@ def stub_urlopen(monkeypatch):
     return install
 
 
+LEAKY_KEY = "sk-ant-test-LEAKCHECK-0123456789"
+
+
 @pytest.fixture
 def api_key(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", LEAKY_KEY)
 
 
 def responder(name: str) -> llm.Responder:
@@ -105,7 +108,7 @@ def test_anthropic_posts_the_whole_history_and_joins_the_text(stub_urlopen, api_
     [(request, timeout)] = fake.calls
     assert request.get_method() == "POST"
     assert request.full_url == "https://api.anthropic.com/v1/messages"
-    assert request.get_header("X-api-key") == "test-key"
+    assert request.get_header("X-api-key") == LEAKY_KEY
     assert request.get_header("Anthropic-version") == "2023-06-01"
     assert request.get_header("Content-type") == "application/json"
     body = json.loads(request.data)
@@ -158,16 +161,23 @@ def test_anthropic_skips_blocks_that_are_not_text(stub_urlopen, api_key):
     assert responder("anthropic").reply(FRUIT) == "前半後半"
 
 
-@pytest.mark.parametrize("error", [
-    urllib.error.URLError("connection refused"),
-    http_error(500),
-    TimeoutError("timed out"),
-], ids=["URLError", "HTTPError-500", "TimeoutError"])
-def test_anthropic_failures_become_unreachable_without_the_key(stub_urlopen, api_key, error):
+@pytest.mark.parametrize(("error", "kind"), [
+    (http_error(401), llm.KeyRejected),
+    (http_error(403), llm.KeyRejected),
+    (http_error(429), llm.Busy),
+    (http_error(529), llm.Busy),
+    (http_error(500), llm.Unreachable),
+    (http_error(404), llm.Unreachable),
+    (urllib.error.URLError("connection refused"), llm.Unreachable),
+    (TimeoutError("timed out"), llm.Unreachable),
+], ids=["HTTPError-401", "HTTPError-403", "HTTPError-429", "HTTPError-529", "HTTPError-500", "HTTPError-404",
+        "URLError", "TimeoutError"])
+def test_anthropic_failures_are_told_apart_without_the_key(stub_urlopen, api_key, error, kind):
     stub_urlopen(error=error)
     with pytest.raises(llm.Unreachable) as raised:
         responder("anthropic").reply(FRUIT)
-    assert "test-key" not in str(raised.value)
+    assert type(raised.value) is kind
+    assert "LEAKCHECK" not in "".join(traceback.format_exception(raised.value))
 
 
 def test_anthropic_strips_the_line_break_around_the_key(stub_urlopen, monkeypatch):
@@ -197,8 +207,9 @@ def test_anthropic_key_unfit_for_a_header_becomes_unreachable_without_the_key(st
 ], ids=["not-json", "no-content", "content-null", "text-block-without-text"])
 def test_anthropic_reply_of_an_unexpected_shape_becomes_unreachable(stub_urlopen, api_key, answer):
     stub_urlopen(answer=answer)
-    with pytest.raises(llm.Unreachable):
+    with pytest.raises(llm.Unreachable) as raised:
         responder("anthropic").reply(FRUIT)
+    assert "LEAKCHECK" not in "".join(traceback.format_exception(raised.value))
 
 
 @pytest.mark.parametrize(("stub", "reachable"), [
@@ -212,7 +223,7 @@ def test_anthropic_check_lists_the_models(stub_urlopen, api_key, stub, reachable
     [(request, timeout)] = fake.calls
     assert request.get_method() == "GET"
     assert request.full_url == "https://api.anthropic.com/v1/models"
-    assert request.get_header("X-api-key") == "test-key"
+    assert request.get_header("X-api-key") == LEAKY_KEY
     assert timeout == 5
 
 
