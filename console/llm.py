@@ -20,6 +20,10 @@ CHECK_TIMEOUT_S = 5
 # stop_reason ごとに応答の本文へ添える一文。end_turn・stop_sequence の応答には何も添えない。
 TRUNCATED_NOTE = "[この応答は長さの上限に達したため、ここで途中で切れています]"
 REFUSED_NOTE = "[AI はこの依頼に答えるのを断りました]"
+UNFINISHED_NOTE = "[AI が検索の途中で止まったため、この応答は完成していません]"
+
+# 検索の途中で止まった (pause_turn の) 応答の続きを取りに行くのは、最初の送信の後に最大 PAUSE_CONTINUES 回まで。
+PAUSE_CONTINUES = 2
 
 # web search ツール。検索するかどうかは AI に任せ、1 回の応答で検索するのは最大 SEARCH_MAX_USES 回まで。
 # 版はモデルから決める。検索結果を絞り込む版に対応するモデルはここに並べ、ほかのモデル (Haiku 5.5 や一覧に無い名前) は基本の版を使う。
@@ -95,14 +99,22 @@ class Anthropic:
             "messages": list(messages),
             "tools": search_tools(self.model),
         }
-        answer = call("POST", "/messages", REPLY_TIMEOUT_S, body)
-        try:
-            data = json.loads(answer)
-            text = "".join(block["text"] for block in data["content"] if block["type"] == "text")
-            found = sources(data["content"])
-            stop_reason = data.get("stop_reason")
-        except (ValueError, KeyError, TypeError, AttributeError) as e:
-            raise Unreachable(f"AI に繋がりません (応答の形が想定外です: {type(e).__name__})") from e
+        # 途中で止まった応答は、返った content をそのまま assistant の発言として足し、同じ要求で続きを取りに行く。
+        content: list[dict[str, object]] = []
+        for _ in range(1 + PAUSE_CONTINUES):
+            answer = call("POST", "/messages", REPLY_TIMEOUT_S, body)
+            try:
+                data = json.loads(answer)
+                part = data["content"]
+                text = "".join(block["text"] for block in [*content, *part] if block["type"] == "text")
+                found = sources([*content, *part])
+                stop_reason = data.get("stop_reason")
+            except (ValueError, KeyError, TypeError, AttributeError) as e:
+                raise Unreachable(f"AI に繋がりません (応答の形が想定外です: {type(e).__name__})") from e
+            content.extend(part)
+            if stop_reason != "pause_turn":
+                break
+            body["messages"] = [*body["messages"], {"role": "assistant", "content": part}]
         return noted(cited(text, found), stop_reason)
 
     def reachable(self) -> bool:
@@ -159,9 +171,11 @@ def cited(text: str, found: Sequence[tuple[str, str]]) -> str:
 
 
 def noted(text: str, stop_reason: object) -> str:
-    """途中で切れた応答には後に、断られた応答には先に、そのことを告げる一文を空行で分けて添える。"""
+    """途中で切れた・完成しなかった応答には後に、断られた応答には先に、そのことを告げる一文を空行で分けて添える。"""
     if stop_reason == "max_tokens":
         return "\n\n".join(part for part in (text, TRUNCATED_NOTE) if part)
+    if stop_reason == "pause_turn":
+        return "\n\n".join(part for part in (text, UNFINISHED_NOTE) if part)
     if stop_reason == "refusal":
         return "\n\n".join(part for part in (REFUSED_NOTE, text) if part)
     return text

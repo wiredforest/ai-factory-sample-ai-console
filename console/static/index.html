@@ -376,10 +376,19 @@
     }
   }
 
-  // 送れなかった理由の表示。
+  // 送れなかった理由の表示。API が返す理由ごとに、次に何をすればよいかが分かる文言にする。
+  const failureReasons = {
+    llm_key_rejected: "AI の鍵 (ANTHROPIC_API_KEY) が正しくありません。鍵を直してから送り直してください",
+    llm_busy: "AI が混んでいます。少し待ってから送り直してください",
+    llm_unavailable: "AI に繋がりません",
+  };
+
   function failureReason(error) {
-    return error === "llm_unavailable" ? "AI に繋がりません" : "送信できませんでした";
+    return failureReasons[error] ?? "送信できませんでした";
   }
+
+  // AI に届かなかった、または鍵を断られた理由。混んでいるときは AI に届いているので含めない。
+  const llmUnreachedErrors = ["llm_unavailable", "llm_key_rejected"];
 
   function showUnsent(bubble, text, message, origin) {
     const notice = document.createElement("p");
@@ -508,7 +517,7 @@
         else if (reopened(origin)) showUnsent(addBubble("user", text), text, message, origin);
         else showUnsentElsewhere(origin, text, message);
         // AI に繋がらなかったことは、どの会話を出していてもサーバの状態に知らせる。
-        if (error === "llm_unavailable") document.dispatchEvent(new CustomEvent("llm-reached", { detail: { ok: false } }));
+        if (llmUnreachedErrors.includes(error)) document.dispatchEvent(new CustomEvent("llm-reached", { detail: { ok: false } }));
         throw new Error(`POST /api/messages: ${response.status} ${error}`);
       }
       const { conversation_id, messages } = await response.json();
