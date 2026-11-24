@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 
 import pytest
-from test_llm import LEAKY_KEY, FakeUrlopen, http_error, responder
+from test_llm import LEAKY_KEY, PAUSED, FakeUrlopen, http_error, responder
 
 from console import chat, llm
 from console.db import Database
@@ -193,10 +193,11 @@ def post_in_process(responder: llm.Responder, conversation_id: int | None) -> tu
     ("anthropic", LEAKY_KEY, {"error": urllib.error.URLError("connection refused")}, "llm_unavailable"),
     ("anthropic", LEAKY_KEY, {"error": TimeoutError("timed out")}, "llm_unavailable"),
     ("anthropic", LEAKY_KEY, {"answer": {"content": None}}, "llm_unavailable"),
+    ("anthropic", LEAKY_KEY, {"answers": [PAUSED, http_error(429)]}, "llm_busy"),
     ("anthropic", None, None, "llm_unavailable"),
     ("fake-down", LEAKY_KEY, None, "llm_unavailable"),
 ], ids=["HTTPError-401", "HTTPError-403", "HTTPError-429", "HTTPError-529", "HTTPError-500", "HTTPError-404",
-        "URLError", "TimeoutError", "unexpected-shape", "anthropic-without-key", "fake-down"])
+        "URLError", "TimeoutError", "unexpected-shape", "continue-HTTPError-429", "anthropic-without-key", "fake-down"])
 def test_a_failed_send_says_why_records_nothing_and_never_shows_the_key(db, monkeypatch, capfd, llm_name, key, stub, error):
     if key is not None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", key)
@@ -329,7 +330,8 @@ def test_page_has_a_new_conversation_button_that_only_clears_the_view(start_app)
 
 def test_page_says_when_the_ai_is_unreachable_and_puts_the_text_back(start_app):
     page = start_app().get("/").body.decode("utf-8")
-    assert 'error === "llm_unavailable" ? "AI に繋がりません"' in page
+    assert 'llm_unavailable: "AI に繋がりません",' in page
+    assert "return failureReasons[error] ?? " in page
     assert "。もう一度送信できます。" in page
     assert 'notice.className = "error"' in page
     assert "composerText.value = text" in page
