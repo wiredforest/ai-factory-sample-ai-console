@@ -281,9 +281,10 @@ def test_anthropic_says_when_a_reply_was_cut_off_or_refused(stub_urlopen, api_ke
 
 
 def test_the_notes_are_distinct_sentences():
-    assert llm.TRUNCATED_NOTE.strip() and llm.REFUSED_NOTE.strip()
-    assert llm.TRUNCATED_NOTE != llm.REFUSED_NOTE
-    assert "\n" not in llm.TRUNCATED_NOTE + llm.REFUSED_NOTE
+    notes = [llm.TRUNCATED_NOTE, llm.REFUSED_NOTE, llm.SEARCH_FAILED_NOTE]
+    assert all(note.strip() for note in notes)
+    assert len(set(notes)) == len(notes)
+    assert not any("\n" in note for note in notes)
 
 
 @pytest.mark.parametrize(("answer", "reply"), [
@@ -466,14 +467,69 @@ def test_a_reply_without_a_search_is_only_its_text(stub_urlopen, api_key, conten
     assert reply == "".join(block["text"] for block in content)
 
 
-def test_a_failed_search_adds_no_empty_sources(stub_urlopen, api_key):
+SEARCH = {"type": "server_tool_use", "id": "srvtoolu_01", "name": "web_search", "input": {"query": "びわ"}}
+SEARCH_ERROR = {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_01",
+                "content": {"type": "web_search_tool_result_error", "error_code": "unavailable"}}
+FAILED = {"stop_reason": "end_turn", "content": [SEARCH, SEARCH_ERROR, {"type": "text", "text": "知っている範囲では…"}]}
+FAILED_REPLY = "知っている範囲では…\n\n" + llm.SEARCH_FAILED_NOTE
+
+
+def test_a_reply_after_a_failed_search_is_its_text_and_then_the_note(stub_urlopen, api_key):
+    stub_urlopen(answer=FAILED)
+    reply = responder("anthropic").reply(FRUIT)
+    assert reply == FAILED_REPLY
+    assert "出典:" not in reply
+
+
+def test_the_note_is_added_once_however_many_searches_failed(stub_urlopen, api_key):
     stub_urlopen(answer={"stop_reason": "end_turn", "content": [
-        {"type": "server_tool_use", "id": "srvtoolu_01", "name": "web_search", "input": {"query": "びわ"}},
-        {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_01",
-         "content": {"type": "web_search_tool_result_error", "error_code": "unavailable"}},
+        SEARCH, SEARCH_ERROR,
+        {**SEARCH, "id": "srvtoolu_02"},
+        {**SEARCH_ERROR, "tool_use_id": "srvtoolu_02",
+         "content": {"type": "web_search_tool_result_error", "error_code": "too_many_requests"}},
         {"type": "text", "text": "検索できませんでした"},
     ]})
-    assert responder("anthropic").reply(FRUIT) == "検索できませんでした"
+    reply = responder("anthropic").reply(FRUIT)
+    assert reply == "検索できませんでした\n\n" + llm.SEARCH_FAILED_NOTE
+    assert reply.count(llm.SEARCH_FAILED_NOTE) == 1
+
+
+def test_a_failed_search_with_no_text_is_only_the_note(stub_urlopen, api_key):
+    stub_urlopen(answer={"stop_reason": "end_turn", "content": [SEARCH, SEARCH_ERROR]})
+    assert responder("anthropic").reply(FRUIT) == llm.SEARCH_FAILED_NOTE
+
+
+@pytest.mark.parametrize("answer", [CITED, searched(), searched({"type": "text", "text": "答え"})],
+                         ids=["cited", "no-text", "uncited"])
+def test_a_successful_search_adds_no_note(stub_urlopen, api_key, answer):
+    stub_urlopen(answer=answer)
+    assert llm.SEARCH_FAILED_NOTE not in responder("anthropic").reply(FRUIT)
+
+
+def test_the_note_comes_before_the_sources_of_the_searches_that_worked(stub_urlopen, api_key):
+    stub_urlopen(answer=searched(
+        {**SEARCH, "id": "srvtoolu_02"}, {**SEARCH_ERROR, "tool_use_id": "srvtoolu_02"},
+        {"type": "text", "text": "答え"}, stop_reason="max_tokens",
+    ))
+    assert responder("anthropic").reply(FRUIT) == (
+        "答え\n\n" + llm.SEARCH_FAILED_NOTE + "\n\n出典:\n- R1 (https://r.example/1)\n\n" + llm.TRUNCATED_NOTE
+    )
+
+
+def test_a_reply_after_a_failed_search_is_recorded_with_its_note_and_sent_back_as_is(stub_urlopen, api_key):
+    fake = stub_urlopen(answer=FAILED)
+    path = config.load().db_path
+    with Database(path) as db:
+        first = chat.send(db, responder("anthropic"), {"conversation_id": None, "text": FRUIT[0]["content"]})
+        assert first["messages"][-1] == {"role": "assistant", "text": FAILED_REPLY}
+    with Database(path) as db:
+        assert [(m.role, m.content) for m in db.conversation(first["conversation_id"]).messages] == [
+            ("user", FRUIT[0]["content"]),
+            ("assistant", FAILED_REPLY),
+        ]
+        chat.send(db, responder("anthropic"), {"conversation_id": first["conversation_id"], "text": "ほかには"})
+    after = json.loads(fake.calls[-1][0].data)
+    assert after["messages"][1] == {"role": "assistant", "content": FAILED_REPLY}
 
 
 def test_the_sources_come_before_the_note_of_a_cut_off_reply(stub_urlopen, api_key):
