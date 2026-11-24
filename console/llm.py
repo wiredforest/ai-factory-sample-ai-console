@@ -36,7 +36,9 @@ FILTERING_SEARCH_MODELS = frozenset({"claude-sonnet-5-5", "claude-opus-5-5"})
 SOURCES_HEADING = "出典:"
 
 # 検索の結果がエラーだった応答の本文の後に、本文が伝えるかどうかに関わらず 1 回だけ添える一文。
+# 全部の検索が失敗した応答には SEARCH_FAILED_NOTE を、結果が返った検索もある応答には SEARCH_PARTLY_FAILED_NOTE を添える。
 SEARCH_FAILED_NOTE = "[Web の検索に失敗したため、この応答は検索の結果に基づいていません]"
+SEARCH_PARTLY_FAILED_NOTE = "[一部の Web の検索に失敗したため、この応答は検索できた分の結果だけに基づいています]"
 
 
 class Message(TypedDict):
@@ -111,7 +113,7 @@ class Anthropic:
                 part = data["content"]
                 text = "".join(block["text"] for block in [*content, *part] if block["type"] == "text")
                 found = sources([*content, *part])
-                failed = search_failed([*content, *part])
+                note = search_note([*content, *part])
                 stop_reason = data.get("stop_reason")
             except (ValueError, KeyError, TypeError, AttributeError) as e:
                 raise Unreachable(f"AI に繋がりません (応答の形が想定外です: {type(e).__name__})") from e
@@ -119,7 +121,7 @@ class Anthropic:
             if stop_reason != "pause_turn":
                 break
             body["messages"] = [*body["messages"], {"role": "assistant", "content": part}]
-        return noted(cited(warned(text, failed), found), stop_reason)
+        return noted(cited(warned(text, note), found), stop_reason)
 
     def reachable(self) -> bool:
         # 一覧ではなく選んだモデルの情報を取る。名前の誤りも送る前に分かり、トークンも使わない。
@@ -166,21 +168,22 @@ def sources(content: list[dict[str, object]]) -> list[tuple[str, str]]:
     return [(title, url) for url, title in seen.items()]
 
 
-def search_failed(content: list[dict[str, object]]) -> bool:
-    """検索の結果がエラー (web_search_tool_result_error) だった web_search_tool_result が 1 つでもあれば真。"""
-    return any(
-        block["type"] == "web_search_tool_result"
-        and isinstance(result := block.get("content"), dict)
-        and result.get("type") == "web_search_tool_result_error"
-        for block in content
-    )
+def search_note(content: list[dict[str, object]]) -> str:
+    """検索の結果がエラー (web_search_tool_result_error) だった web_search_tool_result があれば、添える一文を返す。
+
+    結果 (一覧) が返った web_search_tool_result もあれば SEARCH_PARTLY_FAILED_NOTE、無ければ SEARCH_FAILED_NOTE。失敗が無ければ空。
+    """
+    results = [block.get("content") for block in content if block["type"] == "web_search_tool_result"]
+    if not any(isinstance(result, dict) and result.get("type") == "web_search_tool_result_error" for result in results):
+        return ""
+    if any(isinstance(result, list) for result in results):
+        return SEARCH_PARTLY_FAILED_NOTE
+    return SEARCH_FAILED_NOTE
 
 
-def warned(text: str, failed: bool) -> str:
-    """検索が失敗した応答の本文の後に、空行を置いて検索できなかったことを告げる一文を添える。失敗が無ければ本文のまま。"""
-    if not failed:
-        return text
-    return "\n\n".join(part for part in (text, SEARCH_FAILED_NOTE) if part)
+def warned(text: str, note: str) -> str:
+    """検索が失敗した応答の本文の後に、空行を置いて search_note の一文を添える。一文が空なら本文のまま。"""
+    return "\n\n".join(part for part in (text, note) if part)
 
 
 def cited(text: str, found: Sequence[tuple[str, str]]) -> str:

@@ -281,7 +281,7 @@ def test_anthropic_says_when_a_reply_was_cut_off_or_refused(stub_urlopen, api_ke
 
 
 def test_the_notes_are_distinct_sentences():
-    notes = [llm.TRUNCATED_NOTE, llm.REFUSED_NOTE, llm.SEARCH_FAILED_NOTE]
+    notes = [llm.TRUNCATED_NOTE, llm.REFUSED_NOTE, llm.SEARCH_FAILED_NOTE, llm.SEARCH_PARTLY_FAILED_NOTE]
     assert all(note.strip() for note in notes)
     assert len(set(notes)) == len(notes)
     assert not any("\n" in note for note in notes)
@@ -499,11 +499,50 @@ def test_a_failed_search_with_no_text_is_only_the_note(stub_urlopen, api_key):
     assert responder("anthropic").reply(FRUIT) == llm.SEARCH_FAILED_NOTE
 
 
-@pytest.mark.parametrize("answer", [CITED, searched(), searched({"type": "text", "text": "答え"})],
-                         ids=["cited", "no-text", "uncited"])
-def test_a_successful_search_adds_no_note(stub_urlopen, api_key, answer):
+@pytest.mark.parametrize("answer", [
+    CITED, searched(), searched({"type": "text", "text": "答え"}),
+    {"stop_reason": "end_turn", "content": [{"type": "text", "text": "答え"}]},
+], ids=["cited", "no-text", "uncited", "no-search"])
+def test_a_reply_without_a_failed_search_adds_no_note(stub_urlopen, api_key, answer):
     stub_urlopen(answer=answer)
-    assert llm.SEARCH_FAILED_NOTE not in responder("anthropic").reply(FRUIT)
+    reply = responder("anthropic").reply(FRUIT)
+    assert llm.SEARCH_FAILED_NOTE not in reply
+    assert llm.SEARCH_PARTLY_FAILED_NOTE not in reply
+
+
+# 検索 2 回のうち 2 回目だけが失敗した応答。
+PARTLY_FAILED = searched({**SEARCH, "id": "srvtoolu_02"}, {**SEARCH_ERROR, "tool_use_id": "srvtoolu_02"},
+                         {"type": "text", "text": "片方だけ検索できました"})
+PARTLY_FAILED_REPLY = "片方だけ検索できました\n\n" + llm.SEARCH_PARTLY_FAILED_NOTE + "\n\n出典:\n- R1 (https://r.example/1)"
+
+
+def test_a_reply_after_some_failed_searches_has_the_partly_failed_note_before_its_sources(stub_urlopen, api_key):
+    stub_urlopen(answer=PARTLY_FAILED)
+    reply = responder("anthropic").reply(FRUIT)
+    assert reply == PARTLY_FAILED_REPLY
+    assert llm.SEARCH_FAILED_NOTE not in reply
+
+
+def test_the_partly_failed_note_does_not_depend_on_the_order_of_the_searches(stub_urlopen, api_key):
+    stub_urlopen(answer={"stop_reason": "end_turn", "content": [
+        SEARCH, SEARCH_ERROR,
+        *searched({"type": "text", "text": "片方だけ検索できました"})["content"],
+    ]})
+    assert responder("anthropic").reply(FRUIT) == PARTLY_FAILED_REPLY
+
+
+def test_the_partly_failed_note_is_added_once_however_many_searches_failed(stub_urlopen, api_key):
+    stub_urlopen(answer=searched(
+        {**SEARCH, "id": "srvtoolu_02"}, {**SEARCH_ERROR, "tool_use_id": "srvtoolu_02"},
+        {**SEARCH, "id": "srvtoolu_03"},
+        {**SEARCH_ERROR, "tool_use_id": "srvtoolu_03",
+         "content": {"type": "web_search_tool_result_error", "error_code": "too_many_requests"}},
+        {"type": "text", "text": "答え"},
+    ))
+    reply = responder("anthropic").reply(FRUIT)
+    assert reply == "答え\n\n" + llm.SEARCH_PARTLY_FAILED_NOTE + "\n\n出典:\n- R1 (https://r.example/1)"
+    assert reply.count(llm.SEARCH_PARTLY_FAILED_NOTE) == 1
+    assert llm.SEARCH_FAILED_NOTE not in reply
 
 
 def test_the_note_comes_before_the_sources_of_the_searches_that_worked(stub_urlopen, api_key):
@@ -512,7 +551,24 @@ def test_the_note_comes_before_the_sources_of_the_searches_that_worked(stub_urlo
         {"type": "text", "text": "答え"}, stop_reason="max_tokens",
     ))
     assert responder("anthropic").reply(FRUIT) == (
-        "答え\n\n" + llm.SEARCH_FAILED_NOTE + "\n\n出典:\n- R1 (https://r.example/1)\n\n" + llm.TRUNCATED_NOTE
+        "答え\n\n" + llm.SEARCH_PARTLY_FAILED_NOTE + "\n\n出典:\n- R1 (https://r.example/1)\n\n" + llm.TRUNCATED_NOTE
+    )
+
+
+def test_a_reply_after_some_failed_searches_with_no_text_starts_with_the_note(stub_urlopen, api_key):
+    stub_urlopen(answer=searched({**SEARCH, "id": "srvtoolu_02"}, {**SEARCH_ERROR, "tool_use_id": "srvtoolu_02"}))
+    assert responder("anthropic").reply(FRUIT) == (
+        llm.SEARCH_PARTLY_FAILED_NOTE + "\n\n出典:\n- R1 (https://r.example/1)"
+    )
+
+
+def test_a_search_that_worked_in_another_part_makes_the_failure_partial(stub_urlopen, api_key):
+    stub_urlopen(answers=[
+        {"stop_reason": "pause_turn", "content": [SEARCH, SEARCH_ERROR, {"type": "text", "text": "片方だけ"}]},
+        searched({"type": "text", "text": "検索できました"}),
+    ])
+    assert responder("anthropic").reply(FRUIT) == (
+        "片方だけ検索できました\n\n" + llm.SEARCH_PARTLY_FAILED_NOTE + "\n\n出典:\n- R1 (https://r.example/1)"
     )
 
 
@@ -530,6 +586,22 @@ def test_a_reply_after_a_failed_search_is_recorded_with_its_note_and_sent_back_a
         chat.send(db, responder("anthropic"), {"conversation_id": first["conversation_id"], "text": "ほかには"})
     after = json.loads(fake.calls[-1][0].data)
     assert after["messages"][1] == {"role": "assistant", "content": FAILED_REPLY}
+
+
+def test_a_reply_after_some_failed_searches_is_recorded_with_its_note_and_sent_back_as_is(stub_urlopen, api_key):
+    fake = stub_urlopen(answer=PARTLY_FAILED)
+    path = config.load().db_path
+    with Database(path) as db:
+        first = chat.send(db, responder("anthropic"), {"conversation_id": None, "text": FRUIT[0]["content"]})
+        assert first["messages"][-1] == {"role": "assistant", "text": PARTLY_FAILED_REPLY}
+    with Database(path) as db:
+        assert [(m.role, m.content) for m in db.conversation(first["conversation_id"]).messages] == [
+            ("user", FRUIT[0]["content"]),
+            ("assistant", PARTLY_FAILED_REPLY),
+        ]
+        chat.send(db, responder("anthropic"), {"conversation_id": first["conversation_id"], "text": "ほかには"})
+    after = json.loads(fake.calls[-1][0].data)
+    assert after["messages"][1] == {"role": "assistant", "content": PARTLY_FAILED_REPLY}
 
 
 def test_the_sources_come_before_the_note_of_a_cut_off_reply(stub_urlopen, api_key):
