@@ -20,6 +20,13 @@ CHECK_TIMEOUT_S = 5
 TRUNCATED_NOTE = "[この応答は長さの上限に達したため、ここで途中で切れています]"
 REFUSED_NOTE = "[AI はこの依頼に答えるのを断りました]"
 
+# web search ツール。検索するかどうかは AI に任せ、1 回の応答で検索するのは最大 SEARCH_MAX_USES 回まで。
+# 版はモデルから決める。検索結果を絞り込む版に対応するモデルはここに並べ、ほかのモデル (Haiku 5.5 や一覧に無い名前) は基本の版を使う。
+SEARCH_MAX_USES = 3
+SEARCH_TOOL_BASIC = "web_search_20250305"
+SEARCH_TOOL_FILTERING = "web_search_20260209"
+FILTERING_SEARCH_MODELS = frozenset({"claude-sonnet-5-5", "claude-opus-5-5"})
+
 
 class Message(TypedDict):
     role: Literal["user", "assistant"]
@@ -82,6 +89,7 @@ class Anthropic:
             "max_tokens": MAX_TOKENS,
             "system": system_prompt(),
             "messages": list(messages),
+            "tools": search_tools(self.model),
         }
         answer = call("POST", "/messages", REPLY_TIMEOUT_S, body)
         try:
@@ -98,6 +106,12 @@ class Anthropic:
         except Unreachable:
             return False
         return True
+
+
+def search_tools(model: str) -> list[dict[str, object]]:
+    """要求の tools に入れる、モデルに合った版の web search ツール 1 つだけの一覧。"""
+    version = SEARCH_TOOL_FILTERING if model in FILTERING_SEARCH_MODELS else SEARCH_TOOL_BASIC
+    return [{"type": version, "name": "web_search", "max_uses": SEARCH_MAX_USES}]
 
 
 def noted(text: str, stop_reason: object) -> str:

@@ -190,6 +190,69 @@ def test_a_past_conversation_continues_with_the_model_chosen_after_a_restart(stu
     ]
 
 
+@pytest.mark.parametrize(("model", "version"), [
+    ("claude-haiku-5-5", "web_search_20250305"),
+    ("claude-sonnet-5-5", "web_search_20260209"),
+    ("claude-opus-5-5", "web_search_20260209"),
+    ("claude-unknown-9", "web_search_20250305"),
+], ids=["haiku", "sonnet", "opus", "unlisted"])
+def test_anthropic_offers_the_web_search_tool_of_the_version_the_model_supports(
+        stub_urlopen, api_key, monkeypatch, model, version):
+    monkeypatch.setenv("CONSOLE_MODEL", model)
+    fake = stub_urlopen(answer={"content": [{"type": "text", "text": "こんにちは"}]})
+    responder("anthropic").reply(FRUIT)
+    [(request, _)] = fake.calls
+    body = json.loads(request.data)
+    assert body["model"] == model
+    assert body["tools"] == [{"type": version, "name": "web_search", "max_uses": 3}]
+
+
+def test_anthropic_offers_only_the_web_search_tool_and_leaves_the_search_to_the_ai(stub_urlopen, api_key):
+    fake = stub_urlopen(answer={"content": [{"type": "text", "text": "こんにちは"}]})
+    responder("anthropic").reply(FRUIT)
+    [(request, _)] = fake.calls
+    body = json.loads(request.data)
+    [tool] = body["tools"]
+    assert set(tool) == {"type", "name", "max_uses"}
+    assert "tool_choice" not in body
+    for key in ("allowed_domains", "blocked_domains", "tool_choice"):
+        assert key not in request.data.decode("utf-8")
+
+
+def test_anthropic_reply_after_a_search_joins_only_the_text_blocks(stub_urlopen, api_key):
+    stub_urlopen(answer={"stop_reason": "end_turn", "content": [
+        {"type": "text", "text": "検索します"},
+        {"type": "server_tool_use", "id": "srvtoolu_01", "name": "web_search", "input": {"query": "QUERYMARK びわ 旬"}},
+        {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_01", "content": [
+            {"type": "web_search_result", "url": "https://example.com/biwa", "title": "びわの旬",
+             "encrypted_content": "RESULTMARK", "page_age": None},
+        ]},
+        {"type": "text", "text": "答えです"},
+    ]})
+    reply = responder("anthropic").reply(FRUIT)
+    assert reply.index("検索します") < reply.index("答えです")
+    assert "QUERYMARK" not in reply
+    assert "RESULTMARK" not in reply
+
+
+@pytest.mark.parametrize("model", [None, "", "claude-sonnet-5-5", "claude-opus-5-5", "claude-unknown-9"],
+                         ids=["unset", "empty", "sonnet", "opus", "unlisted"])
+@pytest.mark.parametrize("name", ["fake", "fake-down"])
+def test_fake_responders_stay_off_the_network_whatever_the_model(stub_urlopen, api_key, monkeypatch, name, model):
+    if model is not None:
+        monkeypatch.setenv("CONSOLE_MODEL", model)
+    fake = stub_urlopen(answer={"content": [{"type": "text", "text": "こんにちは"}]})
+    chosen = responder(name)
+    if name == "fake":
+        assert chosen.reply(FRUIT_FOLLOW_UP) == "fake reply #2: 私の好きな果物は何ですか"
+        assert chosen.reachable() is True
+    else:
+        with pytest.raises(llm.Unreachable):
+            chosen.reply(FRUIT_FOLLOW_UP)
+        assert chosen.reachable() is False
+    assert fake.calls == []
+
+
 def test_anthropic_skips_blocks_that_are_not_text(stub_urlopen, api_key):
     stub_urlopen(answer={"content": [
         {"type": "text", "text": "前半"},
