@@ -11,14 +11,15 @@
     height: 100vh;
     display: grid;
     grid-template-columns: 16rem 1fr 16rem;
+    grid-template-rows: auto 1fr;
     font-family: system-ui, sans-serif;
     color: #222;
     background: #f6f6f4;
   }
   section { padding: 1rem; overflow-y: auto; }
   h2 { margin: 0 0 0.75rem; font-size: 1rem; }
-  #history { border-right: 1px solid #ddd; background: #fff; }
-  #status { border-left: 1px solid #ddd; background: #fff; }
+  #history { grid-column: 1; grid-row: 1 / 3; border-right: 1px solid #ddd; background: #fff; }
+  #status { grid-column: 3; grid-row: 1 / 3; border-left: 1px solid #ddd; background: #fff; }
   .empty { color: #777; }
   #conversations { list-style: none; margin: 0; padding: 0; }
   #conversations li { display: flex; align-items: flex-start; border-bottom: 1px solid #eee; }
@@ -28,7 +29,14 @@
   #conversations .delete { margin: 0.5rem 0.25rem; font: inherit; font-size: 0.8rem; }
   #conversations .title { display: block; overflow-wrap: anywhere; }
   #conversations time { font-size: 0.8rem; color: #777; }
-  #chat { display: flex; flex-direction: column; overflow: hidden; }
+  #chat { grid-column: 2; grid-row: 2; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+  #send-failures { grid-column: 2; grid-row: 1; max-height: 40vh; overflow-y: auto; margin: 0; padding: 0.5rem 1rem; list-style: none; background: #fdecea; border-bottom: 1px solid #f3b8b3; }
+  #send-failures li { display: grid; grid-template-columns: 1fr auto; gap: 0.25rem 0.75rem; padding: 0.5rem 0; }
+  #send-failures li + li { border-top: 1px solid #f3b8b3; }
+  #send-failures .summary { margin: 0; color: #c62828; font-weight: bold; }
+  #send-failures .origin { overflow-wrap: anywhere; }
+  #send-failures .text { grid-column: 1; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #send-failures button { grid-column: 2; grid-row: 1 / 3; align-self: start; font: inherit; }
   #chat header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.75rem; }
   #chat header h2 { margin: 0; }
   #new-conversation { font: inherit; }
@@ -57,6 +65,7 @@
     <p class="history-error delete-error" role="alert" hidden>会話を削除できませんでした</p>
     <ul id="conversations"></ul>
   </section>
+  <ul id="send-failures" aria-label="別の会話で送れなかったメッセージ" hidden></ul>
   <section id="chat">
     <header>
       <h2>会話</h2>
@@ -134,6 +143,10 @@
       return item;
     }));
     markCurrent();
+    // 会話の送受信は、別の会話で送れなかったことを知らせるときに、この題名でどの会話かを示す。
+    document.dispatchEvent(new CustomEvent("history-loaded", {
+      detail: { titles: conversations.map(({ id, title }) => ({ conversationId: id, title })) },
+    }));
     // 空の表示は、一覧を読み終えてから出す。先に出すと、会話があるのに一瞬「まだありません」と見える。
     historyEmpty.hidden = conversations.length > 0;
   }
@@ -221,6 +234,11 @@
   let chatView = 0;
   // 送れなかった送信の、記録されていない自分の吹き出しとその後の表示。
   let unsent = [];
+  // 今の会話の最初の自分の発言。履歴の題名がまだ届いていない会話を知らせで示すのに使う。
+  let currentFirstText = null;
+  // 履歴の一覧での会話の題名 (history-loaded で受け取る)。
+  const conversationTitles = new Map();
+  const sendFailures = document.getElementById("send-failures");
 
   function addBubble(role, text) {
     const bubble = document.createElement("div");
@@ -258,6 +276,34 @@
     if (!composerText.value) composerText.value = text;
   }
 
+  // 送っている間に別の会話を開いていたら、送れなかったことを会話の領域の外に知らせる。
+  // 開いた会話の入力欄にも吹き出しにも入れないので、開いた会話へ誤って送られない。会話を切り替えても消えない。
+  function showUnsentElsewhere(origin, text, message) {
+    const item = document.createElement("li");
+    item.setAttribute("role", "alert");
+    const summary = document.createElement("p");
+    summary.className = "summary";
+    const originTitle = document.createElement("span");
+    originTitle.className = "origin";
+    originTitle.textContent = origin.conversationId === null
+      ? "新しい会話"
+      : conversationTitles.get(origin.conversationId) ?? origin.firstText;
+    summary.append(`${message}。「`, originTitle, "」に送ったメッセージは記録されていません:");
+    const body = document.createElement("p");
+    body.className = "text";
+    body.textContent = text;
+    const close = document.createElement("button");
+    close.type = "button";
+    close.textContent = "閉じる";
+    close.addEventListener("click", () => {
+      item.remove();
+      sendFailures.hidden = sendFailures.children.length === 0;
+    });
+    item.append(summary, body, close);
+    sendFailures.append(item);
+    sendFailures.hidden = false;
+  }
+
   async function sendMessage() {
     const text = composerText.value;
     if (sendButton.disabled || !text.trim()) return;
@@ -268,6 +314,7 @@
     unsent = [];
     const bubble = addBubble("user", text);
     const view = chatView;
+    const origin = { conversationId: currentConversationId, firstText: currentFirstText ?? text };
     try {
       let response;
       try {
@@ -279,12 +326,15 @@
       } catch (error) {
         // サーバに届かない。AI に繋がらないときと同じく、送った本文は記録されていない。
         if (view === chatView) showUnsent(bubble, text, "AI に繋がりません");
+        else showUnsentElsewhere(origin, text, "AI に繋がりません");
         throw error;
       }
       if (!response.ok) {
         const error = await errorOf(response);
+        const message = error === "llm_unavailable" ? "AI に繋がりません" : "送信できませんでした";
         // 送っている間に別の会話を開いていたら、送れなかった表示も本文も、開いた会話には出さない。
-        if (view === chatView) showUnsent(bubble, text, error === "llm_unavailable" ? "AI に繋がりません" : "送信できませんでした");
+        if (view === chatView) showUnsent(bubble, text, message);
+        else showUnsentElsewhere(origin, text, message);
         throw new Error(`POST /api/messages: ${response.status} ${error}`);
       }
       const { conversation_id, messages } = await response.json();
@@ -292,6 +342,7 @@
       if (shown) {
         // 自分の吹き出しはもう出ているので、AI の応答だけを足す。
         addBubble("assistant", messages[messages.length - 1].text);
+        currentFirstText ??= text;
         currentConversationId = conversation_id;
       }
       document.dispatchEvent(new CustomEvent("conversation-updated", { detail: { conversationId: conversation_id, shown } }));
@@ -309,6 +360,7 @@
     unsent = [];
     for (const message of messages) addBubble(message.role, message.text);
     currentConversationId = conversationId;
+    currentFirstText = messages.find((message) => message.role === "user")?.text ?? null;
   });
 
   // 押しただけでは会話を作らない。次の送信が conversation_id: null で送られ、成功したときに記録される。
@@ -319,12 +371,17 @@
     unsent = [];
     composerText.value = "";
     currentConversationId = null;
+    currentFirstText = null;
     document.dispatchEvent(new CustomEvent("conversation-new"));
     composerText.focus();
   });
   // 開いている会話が消えたら、新しい会話を押したときと同じにする。消えた id は、次に作る会話に使い直されることがあるので、その id では送らない。
   document.addEventListener("conversation-deleted", (event) => {
     if (event.detail.conversationId === currentConversationId) newConversationButton.click();
+  });
+
+  document.addEventListener("history-loaded", (event) => {
+    for (const { conversationId, title } of event.detail.titles) conversationTitles.set(conversationId, title);
   });
 
   composer.addEventListener("submit", (event) => {
