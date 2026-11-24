@@ -78,7 +78,8 @@
   <section id="status">
     <h2>サーバの状態</h2>
     <ul id="status-items"></ul>
-    <p class="status-error" hidden>状態を読めませんでした</p>
+    <p class="status-error status-unreachable" hidden>サーバに届きません</p>
+    <p class="status-error status-unreadable" hidden>状態を読めませんでした</p>
     <button type="button" id="recheck">再確認</button>
   </section>
 <script>
@@ -350,8 +351,11 @@
   });
 
   const statusList = document.getElementById("status-items");
-  const statusError = document.querySelector("#status .status-error");
+  const statusUnreachable = document.querySelector("#status .status-unreachable");
+  const statusUnreadable = document.querySelector("#status .status-unreadable");
   const recheckButton = document.getElementById("recheck");
+  // 確かめている途中か。ボタンを押せないだけでなく、タブに戻ったときも新しい確かめを重ねない。
+  let statusLoading = false;
   // 会話の送受信が送信の結果から知らせる、AI に繋がらなかったこと。トークンを使わない確かめは通るのに送信は
   // 失敗することがあるので、次の送信が成功するか再確認を押すまで、確かめの結果より優先して「異常」と出す。
   let llmFailedOnSend = false;
@@ -361,13 +365,40 @@
     state.textContent = ok ? "正常" : "異常";
   }
 
+  // 読めなかった理由を 1 つだけ出す。null なら、どちらも出さない。
+  function showStatusNotice(notice) {
+    statusUnreachable.hidden = notice !== statusUnreachable;
+    statusUnreadable.hidden = notice !== statusUnreadable;
+  }
+
+  function showStatusError(notice) {
+    // 前の結果を残すと、読めていないのに「正常」と見えてしまう。
+    statusList.replaceChildren();
+    showStatusNotice(notice);
+  }
+
   async function loadStatus() {
-    // ボタンは読み終えるまで押せないので、読み直しは重ならない。
+    if (statusLoading) return;
+    statusLoading = true;
     recheckButton.disabled = true;
     try {
-      const response = await fetch("/api/status");
-      if (!response.ok) throw new Error(`GET /api/status: ${response.status}`);
-      const { items } = await response.json();
+      let response;
+      try {
+        response = await fetch("/api/status");
+      } catch (error) {
+        // fetch が例外を出すのは、サーバに届かない (止まっている、ポートが閉じている) とき。
+        showStatusError(statusUnreachable);
+        throw error;
+      }
+      let items;
+      try {
+        if (!response.ok) throw new Error(`GET /api/status: ${response.status}`);
+        ({ items } = await response.json());
+      } catch (error) {
+        // 届いたが読めなかった。
+        showStatusError(statusUnreadable);
+        throw error;
+      }
       statusList.replaceChildren(...items.map((item) => {
         const row = document.createElement("li");
         row.dataset.key = item.key;
@@ -378,13 +409,9 @@
         row.append(label, state);
         return row;
       }));
-      statusError.hidden = true;
-    } catch (error) {
-      // 前の結果を残すと、読めていないのに「正常」と見えてしまう。
-      statusList.replaceChildren();
-      statusError.hidden = false;
-      throw error;
+      showStatusNotice(null);
     } finally {
+      statusLoading = false;
       recheckButton.disabled = false;
     }
   }
@@ -400,6 +427,10 @@
     llmFailedOnSend = !event.detail.ok;
     const state = statusList.querySelector('[data-key="llm"] .state');
     if (state) setState(state, event.detail.ok);
+  });
+  // 時間で繰り返しては確かめない。タブに戻ったときは、DEN さんが状態を見ようとする時点なので確かめ直す。
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") loadStatus();
   });
   loadStatus();
 </script>

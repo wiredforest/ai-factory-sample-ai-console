@@ -126,6 +126,17 @@ def test_page_lets_the_send_result_update_the_llm_status(start_app):
     assert "setInterval" not in page
 
 
+def test_page_rechecks_the_status_on_return_and_tells_an_unreachable_server_apart(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    parser = TextById()
+    parser.feed(page)
+    assert "サーバに届きません" in parser.text["status"]
+    assert "状態を読めませんでした" in parser.text["status"]
+    assert 'document.addEventListener("visibilitychange"' in page
+    # 確かめはページを開いたとき・タブに戻ったときだけ。時間で繰り返さない。
+    assert "setInterval" not in page
+
+
 class AncestorsById(HTMLParser):
     """id を持つ要素ごとに、それを囲む要素の id を集める。"""
 
