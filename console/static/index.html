@@ -360,6 +360,8 @@
         // 送っている間に別の会話を開いていたら、送れなかった表示も本文も、開いた会話には出さない。
         if (await stillShown(view)) showUnsent(bubble, text, message);
         else showUnsentElsewhere(origin, text, message);
+        // AI に繋がらなかったことは、どの会話を出していてもサーバの状態に知らせる。
+        if (error === "llm_unavailable") document.dispatchEvent(new CustomEvent("llm-reached", { detail: { ok: false } }));
         throw new Error(`POST /api/messages: ${response.status} ${error}`);
       }
       const { conversation_id, messages } = await response.json();
@@ -371,6 +373,7 @@
         currentConversationId = conversation_id;
       }
       document.dispatchEvent(new CustomEvent("conversation-updated", { detail: { conversationId: conversation_id, shown } }));
+      document.dispatchEvent(new CustomEvent("llm-reached", { detail: { ok: true } }));
     } finally {
       sendButton.disabled = false;
       composerText.focus();
@@ -433,6 +436,14 @@
   const recheckButton = document.getElementById("recheck");
   // 確かめている途中か。ボタンを押せないだけでなく、タブに戻ったときも新しい確かめを重ねない。
   let statusLoading = false;
+  // 会話の送受信が送信の結果から知らせる、AI に繋がらなかったこと。トークンを使わない確かめは通るのに送信は
+  // 失敗することがあるので、次の送信が成功するか再確認を押すまで、確かめの結果より優先して「異常」と出す。
+  let llmFailedOnSend = false;
+
+  function setState(state, ok) {
+    state.className = `state ${ok ? "ok" : "ng"}`;
+    state.textContent = ok ? "正常" : "異常";
+  }
 
   // 読めなかった理由を 1 つだけ出す。null なら、どちらも出さない。
   function showStatusNotice(notice) {
@@ -474,8 +485,7 @@
         const label = document.createElement("span");
         label.textContent = item.label;
         const state = document.createElement("span");
-        state.className = `state ${item.ok ? "ok" : "ng"}`;
-        state.textContent = item.ok ? "正常" : "異常";
+        setState(state, item.ok && !(item.key === "llm" && llmFailedOnSend));
         row.append(label, state);
         return row;
       }));
@@ -486,7 +496,18 @@
     }
   }
 
+  // 再確認を押したら、送信の結果ではなく確かめの結果を出す。listener は登録順に呼ばれるので、loadStatus より先に登録する。
+  recheckButton.addEventListener("click", () => {
+    llmFailedOnSend = false;
+  });
   recheckButton.addEventListener("click", loadStatus);
+  // 送信の結果は、トークンを余計に使わずに得られる最新の証拠なので、確かめ直さずに「AI への接続」だけを変える。
+  // 「アプリ自身」と「会話の記録」は、送信の失敗だけでは変えない。
+  document.addEventListener("llm-reached", (event) => {
+    llmFailedOnSend = !event.detail.ok;
+    const state = statusList.querySelector('[data-key="llm"] .state');
+    if (state) setState(state, event.detail.ok);
+  });
   // 時間で繰り返しては確かめない。タブに戻ったときは、DEN さんが状態を見ようとする時点なので確かめ直す。
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") loadStatus();

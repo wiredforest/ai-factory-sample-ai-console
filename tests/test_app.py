@@ -114,6 +114,18 @@ def test_port_in_use_with_an_unopenable_record_still_exits_2_with_one_line(start
     assert result.stderr.splitlines() == [f"error: ポート {first.port} はすでに使われています"]
 
 
+def test_page_lets_the_send_result_update_the_llm_status(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    # 会話の送受信は status を直接呼ばず、document の CustomEvent で送信の結果を知らせる。
+    assert 'new CustomEvent("llm-reached", { detail: { ok: false } })' in page
+    assert 'new CustomEvent("llm-reached", { detail: { ok: true } })' in page
+    assert 'document.addEventListener("llm-reached"' in page
+    # 変えるのは「AI への接続」だけ。送信のたびに確かめ直さず、時間でも繰り返さない。
+    assert """statusList.querySelector('[data-key="llm"] .state')""" in page
+    assert page.count('fetch("/api/status")') == 1
+    assert "setInterval" not in page
+
+
 def test_page_rechecks_the_status_on_return_and_tells_an_unreachable_server_apart(start_app):
     page = start_app().get("/").body.decode("utf-8")
     parser = TextById()
