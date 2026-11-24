@@ -292,3 +292,81 @@ def test_page_keeps_the_text_after_the_fence_language_visible_above_the_code_blo
     assert rule
     assert "display: none" not in rule[1]
     assert "visibility" not in rule[1]
+
+
+def highlight_rules_of(page: str, constant: str) -> str:
+    rules = re.search(rf"const {constant} = \{{\n(.*?)\n  \}};", page, re.DOTALL)
+    assert rules, constant
+    return rules[1]
+
+
+def keywords_of(rules: str) -> set[str]:
+    listed = re.search(r"keywords: \[(.*?)\]", rules, re.DOTALL)
+    assert listed
+    return set(re.findall(r'"(\w+)"', listed[1]))
+
+
+def test_page_colours_only_ts_js_python_and_bash_code_blocks(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    # 色分けするのはこの 10 個の言語の指定 (大文字小文字は問わない) だけ。ほかの言語や指定なしの code は文字だけのまま。
+    aliases = dict(re.findall(r'\["(\w+)", (\w+_HIGHLIGHT)\]', page))
+    assert aliases == {
+        "typescript": "SCRIPT_HIGHLIGHT", "ts": "SCRIPT_HIGHLIGHT", "javascript": "SCRIPT_HIGHLIGHT", "js": "SCRIPT_HIGHLIGHT",
+        "python": "PYTHON_HIGHLIGHT", "py": "PYTHON_HIGHLIGHT",
+        "bash": "BASH_HIGHLIGHT", "sh": "BASH_HIGHLIGHT", "shell": "BASH_HIGHLIGHT",
+    }
+    # 中身はまず文字のまま入れ、色分けする言語のときだけ、同じ文字を span で包んだものに置き換える。
+    plain = 'code.textContent = fence.lines.map((line) => line.replace(indent, "")).join("\\n");'
+    coloured = "const rules = HIGHLIGHT_RULES.get(fence.lang.toLowerCase());\n"
+    coloured += "    if (rules) code.replaceChildren(highlighted(code.textContent, rules));"
+    assert plain + "\n    " + coloured in page
+    assert page.count("highlighted(") == 2
+    # 色分けは 1 つの関数で、span は createElement で作り、文字は textContent で入れる。
+    function = re.search(r"function highlighted\(source, rules\) \{\n(.*?)\n  \}\n", page, re.DOTALL)
+    assert function
+    assert 'document.createElement("span")' in function[1]
+    assert "span.className = `hl-${kind}`;" in function[1]
+    assert "span.textContent = text;" in function[1]
+    # 包まれない文字も、間と最後の分を落とさずに入れる。
+    assert "fragment.append(source.slice(last, match.index));" in function[1]
+    assert "fragment.append(source.slice(last));" in function[1]
+    # コメントと文字列を語より先に取るので、その中の語はキーワードにならない。
+    assert "(${rules.comments.join(\"|\")})|(${rules.strings.join(\"|\")})|(${number})|(${rules.word})" in function[1]
+
+
+def test_page_lists_the_keywords_strings_and_comments_of_each_coloured_language(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    script = highlight_rules_of(page, "SCRIPT_HIGHLIGHT")
+    assert keywords_of(script) >= {
+        "const", "let", "var", "function", "return", "if", "else", "for", "while", "class", "new", "import",
+        "export", "from", "async", "await", "typeof", "interface", "type",
+    }
+    assert "String.raw`\\/\\/.*`" in script
+    assert "String.raw`\\/\\*[\\s\\S]*?\\*\\/`" in script
+    python = highlight_rules_of(page, "PYTHON_HIGHLIGHT")
+    assert keywords_of(python) >= {
+        "def", "return", "if", "elif", "else", "for", "while", "in", "class", "import", "from", "as", "lambda",
+        "None", "True", "False", "and", "or", "not", "with", "try", "except",
+    }
+    assert "String.raw`#.*`" in python
+    assert 'String.raw`"""[\\s\\S]*?"""`' in python
+    bash = highlight_rules_of(page, "BASH_HIGHLIGHT")
+    assert keywords_of(bash) >= {"if", "then", "else", "elif", "fi", "for", "in", "do", "done", "while", "case", "esac", "function"}
+    # シェルの # は行頭か空白の後だけがコメント。
+    assert "String.raw`(?<!\\S)#.*`" in bash
+    # 数値は語の一部でない十進の整数と小数。
+    assert "String.raw`(?<![\\w$.])\\d+(?:\\.\\d+)?(?![\\w$])`" in page
+
+
+def test_page_gives_each_highlight_class_its_own_colour(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    colours = {}
+    for kind in ("keyword", "string", "comment", "number"):
+        rule = re.search(rf"\.bubble \.text \.hl-{kind} \{{([^}}]*)\}}", page)
+        assert rule, kind
+        colours[kind] = re.search(r"(?<!-)color: (#\w+);", rule[1])[1].lower()
+    pre = re.search(r"\.bubble \.text pre \{([^}]*)\}", page)
+    base = re.search(r"(?<!-)color: (#\w+);", pre[1])[1].lower()
+    # 4 つとも互いに違い、どれもコードの地の文字の色と違う。
+    assert len(set(colours.values())) == 4
+    assert base not in colours.values()
