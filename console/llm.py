@@ -4,6 +4,7 @@ import http.client
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Sequence
 from datetime import date
@@ -19,6 +20,10 @@ CHECK_TIMEOUT_S = 5
 # stop_reason ごとに応答の本文へ添える一文。end_turn・stop_sequence の応答には何も添えない。
 TRUNCATED_NOTE = "[この応答は長さの上限に達したため、ここで途中で切れています]"
 REFUSED_NOTE = "[AI はこの依頼に答えるのを断りました]"
+UNFINISHED_NOTE = "[AI が検索の途中で止まったため、この応答は完成していません]"
+
+# 検索の途中で止まった (pause_turn の) 応答の続きを取りに行くのは、最初の送信の後に最大 PAUSE_CONTINUES 回まで。
+PAUSE_CONTINUES = 2
 
 # web search ツール。検索するかどうかは AI に任せ、1 回の応答で検索するのは最大 SEARCH_MAX_USES 回まで。
 # 版はモデルから決める。検索結果を絞り込む版に対応するモデルはここに並べ、ほかのモデル (Haiku 5.5 や一覧に無い名前) は基本の版を使う。
@@ -29,6 +34,9 @@ FILTERING_SEARCH_MODELS = frozenset({"claude-sonnet-5-5", "claude-opus-5-5"})
 
 # 検索を使った応答の本文の後に置く出典の欄の見出し。欄の形は cited が決める。
 SOURCES_HEADING = "出典:"
+
+# 検索の結果がエラーだった応答の本文の後に、本文が伝えるかどうかに関わらず 1 回だけ添える一文。
+SEARCH_FAILED_NOTE = "[Web の検索に失敗したため、この応答は検索の結果に基づいていません]"
 
 
 class Message(TypedDict):
@@ -94,19 +102,29 @@ class Anthropic:
             "messages": list(messages),
             "tools": search_tools(self.model),
         }
-        answer = call("POST", "/messages", REPLY_TIMEOUT_S, body)
-        try:
-            data = json.loads(answer)
-            text = "".join(block["text"] for block in data["content"] if block["type"] == "text")
-            found = sources(data["content"])
-            stop_reason = data.get("stop_reason")
-        except (ValueError, KeyError, TypeError, AttributeError) as e:
-            raise Unreachable(f"AI に繋がりません (応答の形が想定外です: {type(e).__name__})") from e
-        return noted(cited(text, found), stop_reason)
+        # 途中で止まった応答は、返った content をそのまま assistant の発言として足し、同じ要求で続きを取りに行く。
+        content: list[dict[str, object]] = []
+        for _ in range(1 + PAUSE_CONTINUES):
+            answer = call("POST", "/messages", REPLY_TIMEOUT_S, body)
+            try:
+                data = json.loads(answer)
+                part = data["content"]
+                text = "".join(block["text"] for block in [*content, *part] if block["type"] == "text")
+                found = sources([*content, *part])
+                failed = search_failed([*content, *part])
+                stop_reason = data.get("stop_reason")
+            except (ValueError, KeyError, TypeError, AttributeError) as e:
+                raise Unreachable(f"AI に繋がりません (応答の形が想定外です: {type(e).__name__})") from e
+            content.extend(part)
+            if stop_reason != "pause_turn":
+                break
+            body["messages"] = [*body["messages"], {"role": "assistant", "content": part}]
+        return noted(cited(warned(text, failed), found), stop_reason)
 
     def reachable(self) -> bool:
+        # 一覧ではなく選んだモデルの情報を取る。名前の誤りも送る前に分かり、トークンも使わない。
         try:
-            call("GET", "/models", CHECK_TIMEOUT_S)
+            call("GET", "/models/" + urllib.parse.quote(self.model, safe=""), CHECK_TIMEOUT_S)
         except Unreachable:
             return False
         return True
@@ -148,6 +166,23 @@ def sources(content: list[dict[str, object]]) -> list[tuple[str, str]]:
     return [(title, url) for url, title in seen.items()]
 
 
+def search_failed(content: list[dict[str, object]]) -> bool:
+    """検索の結果がエラー (web_search_tool_result_error) だった web_search_tool_result が 1 つでもあれば真。"""
+    return any(
+        block["type"] == "web_search_tool_result"
+        and isinstance(result := block.get("content"), dict)
+        and result.get("type") == "web_search_tool_result_error"
+        for block in content
+    )
+
+
+def warned(text: str, failed: bool) -> str:
+    """検索が失敗した応答の本文の後に、空行を置いて検索できなかったことを告げる一文を添える。失敗が無ければ本文のまま。"""
+    if not failed:
+        return text
+    return "\n\n".join(part for part in (text, SEARCH_FAILED_NOTE) if part)
+
+
 def cited(text: str, found: Sequence[tuple[str, str]]) -> str:
     """本文の後に空行を置き、出典の欄 (見出しと、1 行に 1 つの「- 題名 (URL)」か題名の無い「- URL」) を添える。出典が無ければ本文のまま。"""
     if not found:
@@ -157,9 +192,11 @@ def cited(text: str, found: Sequence[tuple[str, str]]) -> str:
 
 
 def noted(text: str, stop_reason: object) -> str:
-    """途中で切れた応答には後に、断られた応答には先に、そのことを告げる一文を空行で分けて添える。"""
+    """途中で切れた・完成しなかった応答には後に、断られた応答には先に、そのことを告げる一文を空行で分けて添える。"""
     if stop_reason == "max_tokens":
         return "\n\n".join(part for part in (text, TRUNCATED_NOTE) if part)
+    if stop_reason == "pause_turn":
+        return "\n\n".join(part for part in (text, UNFINISHED_NOTE) if part)
     if stop_reason == "refusal":
         return "\n\n".join(part for part in (REFUSED_NOTE, text) if part)
     return text

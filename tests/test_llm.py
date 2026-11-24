@@ -20,21 +20,24 @@ FRUIT_FOLLOW_UP = [
 
 
 class FakeUrlopen:
-    """urllib.request.urlopen の差し替え。受け取った要求を記録し、決めた応答 (bytes ならそのまま、ほかは JSON) を返すか例外を送出する。"""
+    """urllib.request.urlopen の差し替え。受け取った要求を記録し、決めた応答 (bytes ならそのまま、ほかは JSON) を返すか例外を送出する。
 
-    def __init__(self, answer: object = None, error: Exception | None = None) -> None:
-        self.answer = answer
-        self.error = error
+    answers を渡すと、呼ばれるたびにその順で応答を返す (例外なら送出する)。尽きたら最初からくり返す。
+    """
+
+    def __init__(self, answer: object = None, error: Exception | None = None, answers: list[object] | None = None) -> None:
+        self.answers = answers if answers is not None else [error if error is not None else answer]
         self.calls: list[tuple[urllib.request.Request, float]] = []
 
     def __call__(self, request: urllib.request.Request, timeout: float) -> io.BytesIO:
         put_headers(request)
         self.calls.append((request, timeout))
-        if self.error is not None:
-            raise self.error
-        if isinstance(self.answer, bytes):
-            return io.BytesIO(self.answer)
-        return io.BytesIO(json.dumps(self.answer).encode("utf-8"))
+        answer = self.answers[(len(self.calls) - 1) % len(self.answers)]
+        if isinstance(answer, Exception):
+            raise answer
+        if isinstance(answer, bytes):
+            return io.BytesIO(answer)
+        return io.BytesIO(json.dumps(answer).encode("utf-8"))
 
 
 def put_headers(request: urllib.request.Request) -> None:
@@ -278,9 +281,10 @@ def test_anthropic_says_when_a_reply_was_cut_off_or_refused(stub_urlopen, api_ke
 
 
 def test_the_notes_are_distinct_sentences():
-    assert llm.TRUNCATED_NOTE.strip() and llm.REFUSED_NOTE.strip()
-    assert llm.TRUNCATED_NOTE != llm.REFUSED_NOTE
-    assert "\n" not in llm.TRUNCATED_NOTE + llm.REFUSED_NOTE
+    notes = [llm.TRUNCATED_NOTE, llm.REFUSED_NOTE, llm.SEARCH_FAILED_NOTE]
+    assert all(note.strip() for note in notes)
+    assert len(set(notes)) == len(notes)
+    assert not any("\n" in note for note in notes)
 
 
 @pytest.mark.parametrize(("answer", "reply"), [
@@ -360,19 +364,35 @@ def test_anthropic_reply_of_an_unexpected_shape_becomes_unreachable(stub_urlopen
     assert "LEAKCHECK" not in "".join(traceback.format_exception(raised.value))
 
 
+MODEL_INFO = {"type": "model", "id": "claude-sonnet-5-5", "display_name": "Claude Sonnet 5.5"}
+
+
 @pytest.mark.parametrize(("stub", "reachable"), [
-    ({"answer": {"data": []}}, True),
+    ({"answer": MODEL_INFO}, True),
     ({"answer": b"not json"}, True),
+    ({"error": http_error(404)}, False),
     ({"error": http_error(401)}, False),
-], ids=["200", "200-not-json", "401"])
-def test_anthropic_check_lists_the_models(stub_urlopen, api_key, stub, reachable):
+    ({"error": http_error(500)}, False),
+    ({"error": urllib.error.URLError("connection refused")}, False),
+], ids=["200", "200-not-json", "HTTPError-404", "HTTPError-401", "HTTPError-500", "URLError"])
+def test_anthropic_check_gets_the_chosen_model(stub_urlopen, api_key, monkeypatch, stub, reachable):
+    monkeypatch.setenv("CONSOLE_MODEL", "claude-sonnet-5-5")
     fake = stub_urlopen(**stub)
     assert responder("anthropic").reachable() is reachable
     [(request, timeout)] = fake.calls
     assert request.get_method() == "GET"
-    assert request.full_url == "https://api.anthropic.com/v1/models"
+    assert request.full_url == "https://api.anthropic.com/v1/models/claude-sonnet-5-5"
+    assert request.data is None
     assert request.get_header("X-api-key") == LEAKY_KEY
     assert timeout == 5
+
+
+def test_anthropic_check_puts_the_model_name_in_one_segment_of_the_path(stub_urlopen, api_key, monkeypatch):
+    monkeypatch.setenv("CONSOLE_MODEL", "a/b c")
+    fake = stub_urlopen(error=http_error(404))
+    assert responder("anthropic").reachable() is False
+    [(request, _)] = fake.calls
+    assert request.full_url == "https://api.anthropic.com/v1/models/a%2Fb%20c"
 
 
 def test_calling_urlopen_without_a_stub_fails_the_test(api_key):
@@ -447,14 +467,69 @@ def test_a_reply_without_a_search_is_only_its_text(stub_urlopen, api_key, conten
     assert reply == "".join(block["text"] for block in content)
 
 
-def test_a_failed_search_adds_no_empty_sources(stub_urlopen, api_key):
+SEARCH = {"type": "server_tool_use", "id": "srvtoolu_01", "name": "web_search", "input": {"query": "びわ"}}
+SEARCH_ERROR = {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_01",
+                "content": {"type": "web_search_tool_result_error", "error_code": "unavailable"}}
+FAILED = {"stop_reason": "end_turn", "content": [SEARCH, SEARCH_ERROR, {"type": "text", "text": "知っている範囲では…"}]}
+FAILED_REPLY = "知っている範囲では…\n\n" + llm.SEARCH_FAILED_NOTE
+
+
+def test_a_reply_after_a_failed_search_is_its_text_and_then_the_note(stub_urlopen, api_key):
+    stub_urlopen(answer=FAILED)
+    reply = responder("anthropic").reply(FRUIT)
+    assert reply == FAILED_REPLY
+    assert "出典:" not in reply
+
+
+def test_the_note_is_added_once_however_many_searches_failed(stub_urlopen, api_key):
     stub_urlopen(answer={"stop_reason": "end_turn", "content": [
-        {"type": "server_tool_use", "id": "srvtoolu_01", "name": "web_search", "input": {"query": "びわ"}},
-        {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_01",
-         "content": {"type": "web_search_tool_result_error", "error_code": "unavailable"}},
+        SEARCH, SEARCH_ERROR,
+        {**SEARCH, "id": "srvtoolu_02"},
+        {**SEARCH_ERROR, "tool_use_id": "srvtoolu_02",
+         "content": {"type": "web_search_tool_result_error", "error_code": "too_many_requests"}},
         {"type": "text", "text": "検索できませんでした"},
     ]})
-    assert responder("anthropic").reply(FRUIT) == "検索できませんでした"
+    reply = responder("anthropic").reply(FRUIT)
+    assert reply == "検索できませんでした\n\n" + llm.SEARCH_FAILED_NOTE
+    assert reply.count(llm.SEARCH_FAILED_NOTE) == 1
+
+
+def test_a_failed_search_with_no_text_is_only_the_note(stub_urlopen, api_key):
+    stub_urlopen(answer={"stop_reason": "end_turn", "content": [SEARCH, SEARCH_ERROR]})
+    assert responder("anthropic").reply(FRUIT) == llm.SEARCH_FAILED_NOTE
+
+
+@pytest.mark.parametrize("answer", [CITED, searched(), searched({"type": "text", "text": "答え"})],
+                         ids=["cited", "no-text", "uncited"])
+def test_a_successful_search_adds_no_note(stub_urlopen, api_key, answer):
+    stub_urlopen(answer=answer)
+    assert llm.SEARCH_FAILED_NOTE not in responder("anthropic").reply(FRUIT)
+
+
+def test_the_note_comes_before_the_sources_of_the_searches_that_worked(stub_urlopen, api_key):
+    stub_urlopen(answer=searched(
+        {**SEARCH, "id": "srvtoolu_02"}, {**SEARCH_ERROR, "tool_use_id": "srvtoolu_02"},
+        {"type": "text", "text": "答え"}, stop_reason="max_tokens",
+    ))
+    assert responder("anthropic").reply(FRUIT) == (
+        "答え\n\n" + llm.SEARCH_FAILED_NOTE + "\n\n出典:\n- R1 (https://r.example/1)\n\n" + llm.TRUNCATED_NOTE
+    )
+
+
+def test_a_reply_after_a_failed_search_is_recorded_with_its_note_and_sent_back_as_is(stub_urlopen, api_key):
+    fake = stub_urlopen(answer=FAILED)
+    path = config.load().db_path
+    with Database(path) as db:
+        first = chat.send(db, responder("anthropic"), {"conversation_id": None, "text": FRUIT[0]["content"]})
+        assert first["messages"][-1] == {"role": "assistant", "text": FAILED_REPLY}
+    with Database(path) as db:
+        assert [(m.role, m.content) for m in db.conversation(first["conversation_id"]).messages] == [
+            ("user", FRUIT[0]["content"]),
+            ("assistant", FAILED_REPLY),
+        ]
+        chat.send(db, responder("anthropic"), {"conversation_id": first["conversation_id"], "text": "ほかには"})
+    after = json.loads(fake.calls[-1][0].data)
+    assert after["messages"][1] == {"role": "assistant", "content": FAILED_REPLY}
 
 
 def test_the_sources_come_before_the_note_of_a_cut_off_reply(stub_urlopen, api_key):
@@ -490,3 +565,103 @@ def test_a_searched_reply_is_recorded_with_its_sources_and_sent_back_as_is(stub_
         chat.send(db, responder("anthropic"), {"conversation_id": first["conversation_id"], "text": "ほかには"})
     after = json.loads(fake.calls[-1][0].data)
     assert after["messages"][1] == {"role": "assistant", "content": CITED_REPLY}
+
+
+PAUSED = {"stop_reason": "pause_turn", "content": [
+    {"type": "text", "text": "前半"},
+    {"type": "server_tool_use", "id": "srvtoolu_01", "name": "web_search", "input": {"query": "びわ"}},
+]}
+FINISHED = {"stop_reason": "end_turn", "content": [{"type": "text", "text": "後半"}]}
+
+
+def posted(fake: FakeUrlopen) -> list[dict]:
+    assert all(request.get_method() == "POST" and request.full_url.endswith("/messages") for request, _ in fake.calls)
+    return [json.loads(request.data) for request, _ in fake.calls]
+
+
+def test_a_paused_reply_is_continued_with_its_content_and_the_same_request(stub_urlopen, api_key):
+    fake = stub_urlopen(answers=[PAUSED, FINISHED])
+    reply = responder("anthropic").reply(FRUIT_FOLLOW_UP)
+    first, second = posted(fake)
+    assert first["messages"] == FRUIT_FOLLOW_UP
+    assert second["messages"] == [*FRUIT_FOLLOW_UP, {"role": "assistant", "content": PAUSED["content"]}]
+    for key in ("model", "system", "tools", "max_tokens"):
+        assert second[key] == first[key]
+    assert reply == "前半後半"
+    assert llm.UNFINISHED_NOTE not in reply
+
+
+def test_a_reply_still_paused_after_two_continues_says_it_is_unfinished(stub_urlopen, api_key):
+    fake = stub_urlopen(answers=[PAUSED])
+    reply = responder("anthropic").reply(FRUIT)
+    first, second, third = posted(fake)
+    assert first["messages"] == FRUIT
+    assert second["messages"] == [*FRUIT, {"role": "assistant", "content": PAUSED["content"]}]
+    assert third["messages"] == [*second["messages"], {"role": "assistant", "content": PAUSED["content"]}]
+    assert reply == "前半前半前半\n\n" + llm.UNFINISHED_NOTE
+
+
+def test_the_unfinished_note_is_its_own_sentence():
+    assert llm.UNFINISHED_NOTE.strip() and "\n" not in llm.UNFINISHED_NOTE
+    assert llm.UNFINISHED_NOTE not in (llm.TRUNCATED_NOTE, llm.REFUSED_NOTE)
+
+
+@pytest.mark.parametrize("answer", [FINISHED, {"stop_reason": "max_tokens", "content": [{"type": "text", "text": "途中"}]}],
+                         ids=["end_turn", "max_tokens"])
+def test_a_reply_that_did_not_pause_is_posted_once(stub_urlopen, api_key, answer):
+    fake = stub_urlopen(answer=answer)
+    responder("anthropic").reply(FRUIT)
+    assert len(posted(fake)) == 1
+
+
+@pytest.mark.parametrize(("error", "kind"), [
+    (http_error(429), llm.Busy),
+    (http_error(401), llm.KeyRejected),
+    (TimeoutError("timed out"), llm.Unreachable),
+], ids=["HTTPError-429", "HTTPError-401", "TimeoutError"])
+def test_a_failed_continue_fails_the_send_like_the_first_post(stub_urlopen, api_key, error, kind):
+    fake = stub_urlopen(answers=[PAUSED, error])
+    with pytest.raises(llm.Unreachable) as raised:
+        responder("anthropic").reply(FRUIT)
+    assert type(raised.value) is kind
+    assert len(fake.calls) == 2
+    assert "LEAKCHECK" not in "".join(traceback.format_exception(raised.value))
+
+
+def test_a_continue_of_an_unexpected_shape_becomes_unreachable(stub_urlopen, api_key):
+    stub_urlopen(answers=[PAUSED, {"content": None}])
+    with pytest.raises(llm.Unreachable):
+        responder("anthropic").reply(FRUIT)
+
+
+def test_the_sources_and_the_note_follow_the_text_of_every_part(stub_urlopen, api_key):
+    stub_urlopen(answers=[
+        {"stop_reason": "pause_turn", "content": searched({"type": "text", "text": "びわの旬は"})["content"]},
+        {"stop_reason": "max_tokens", "content": [
+            {"type": "text", "text": "初夏です", "citations": [location("https://a.example/1", "A")]},
+        ]},
+    ])
+    assert responder("anthropic").reply(FRUIT) == (
+        "びわの旬は初夏です\n\n出典:\n- A (https://a.example/1)\n\n" + llm.TRUNCATED_NOTE
+    )
+
+
+def test_a_continued_reply_is_recorded_as_one_exchange_and_sent_back_as_is(stub_urlopen, api_key):
+    fake = stub_urlopen(answers=[PAUSED, FINISHED])
+    path = config.load().db_path
+    with Database(path) as db:
+        first = chat.send(db, responder("anthropic"), {"conversation_id": None, "text": FRUIT[0]["content"]})
+        assert first["messages"][-1] == {"role": "assistant", "text": "前半後半"}
+    with Database(path) as db:
+        assert len(db.list_conversations()) == 1
+        assert [(m.role, m.content) for m in db.conversation(first["conversation_id"]).messages] == [
+            ("user", FRUIT[0]["content"]),
+            ("assistant", "前半後半"),
+        ]
+        fake.answers = [FINISHED]
+        chat.send(db, responder("anthropic"), {"conversation_id": first["conversation_id"], "text": "ほかには"})
+    assert posted(fake)[-1]["messages"] == [
+        {"role": "user", "content": FRUIT[0]["content"]},
+        {"role": "assistant", "content": "前半後半"},
+        {"role": "user", "content": "ほかには"},
+    ]

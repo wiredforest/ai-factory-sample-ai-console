@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 
 import pytest
-from test_llm import LEAKY_KEY, FakeUrlopen, http_error, responder
+from test_llm import LEAKY_KEY, PAUSED, FakeUrlopen, http_error, responder
 
 from console import chat, llm
 from console.db import Database
@@ -193,10 +193,11 @@ def post_in_process(responder: llm.Responder, conversation_id: int | None) -> tu
     ("anthropic", LEAKY_KEY, {"error": urllib.error.URLError("connection refused")}, "llm_unavailable"),
     ("anthropic", LEAKY_KEY, {"error": TimeoutError("timed out")}, "llm_unavailable"),
     ("anthropic", LEAKY_KEY, {"answer": {"content": None}}, "llm_unavailable"),
+    ("anthropic", LEAKY_KEY, {"answers": [PAUSED, http_error(429)]}, "llm_busy"),
     ("anthropic", None, None, "llm_unavailable"),
     ("fake-down", LEAKY_KEY, None, "llm_unavailable"),
 ], ids=["HTTPError-401", "HTTPError-403", "HTTPError-429", "HTTPError-529", "HTTPError-500", "HTTPError-404",
-        "URLError", "TimeoutError", "unexpected-shape", "anthropic-without-key", "fake-down"])
+        "URLError", "TimeoutError", "unexpected-shape", "continue-HTTPError-429", "anthropic-without-key", "fake-down"])
 def test_a_failed_send_says_why_records_nothing_and_never_shows_the_key(db, monkeypatch, capfd, llm_name, key, stub, error):
     if key is not None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", key)
@@ -329,7 +330,8 @@ def test_page_has_a_new_conversation_button_that_only_clears_the_view(start_app)
 
 def test_page_says_when_the_ai_is_unreachable_and_puts_the_text_back(start_app):
     page = start_app().get("/").body.decode("utf-8")
-    assert 'error === "llm_unavailable" ? "AI に繋がりません"' in page
+    assert 'llm_unavailable: "AI に繋がりません",' in page
+    assert "return failureReasons[error] ?? " in page
     assert "。もう一度送信できます。" in page
     assert 'notice.className = "error"' in page
     assert "composerText.value = text" in page
@@ -339,10 +341,10 @@ def test_a_resend_from_the_unsent_notice_updates_the_llm_status_by_the_same_rule
     # 送れなかった知らせからの送り直しも送信の 1 つ。通常の送信と同じ規則で「AI への接続」に知らせる (#61)。
     page = start_app().get("/").body.decode("utf-8")
     rule = re.search(r"function reportSent\(ok, error\) \{\n(.*?)\n  \}\n", page, re.DOTALL).group(1)
-    # 応答が返ったら正常、AI に繋がらずに断られたら異常。それ以外の断りでは知らせない (= 変えない)。
+    # 応答が返ったら正常、AI に届かずに断られたら異常 (#58 の llmUnreachedErrors)。それ以外の断りでは知らせない (= 変えない)。
     assert rule.splitlines() == [
         '    if (ok) document.dispatchEvent(new CustomEvent("llm-reached", { detail: { ok: true } }));',
-        '    else if (error === "llm_unavailable") document.dispatchEvent(new CustomEvent("llm-reached", { detail: { ok: false } }));',
+        '    else if (llmUnreachedErrors.includes(error)) document.dispatchEvent(new CustomEvent("llm-reached", { detail: { ok: false } }));',
     ]
     # 規則はここ 1 箇所だけ。送信も送り直しも、ほかで llm-reached を送らない。
     assert page.count('new CustomEvent("llm-reached"') == 2

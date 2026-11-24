@@ -45,6 +45,12 @@
   .bubble { max-width: 75%; padding: 0.5rem 0.75rem; border-radius: 0.75rem; }
   .bubble .speaker { display: block; font-size: 0.75rem; font-weight: bold; margin-bottom: 0.25rem; }
   .bubble .text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .bubble .text > * { margin: 0; }
+  .bubble .text > * + * { margin-top: 0.5em; }
+  .bubble .text :is(h1, h2, h3, h4, h5, h6) { font-size: 1em; line-height: 1.3; }
+  .bubble .text h1 { font-size: 1.5em; }
+  .bubble .text h2 { font-size: 1.3em; }
+  .bubble .text h3 { font-size: 1.15em; }
   .bubble.user { align-self: flex-end; background: #d7ecff; }
   .bubble.assistant { align-self: flex-start; background: #fff; border: 1px solid #ddd; }
   #messages .error { align-self: flex-end; margin: 0; color: #c62828; font-weight: bold; }
@@ -276,15 +282,82 @@
     return origin.conversationId !== null && origin.conversationId === currentConversationId;
   }
 
+  // AI の応答の原文を Markdown のブロックとして読み、吹き出しの本文に並べる要素を返す。記録は原文のままで、出すたびにここで組み立てる。
+  // 解釈するのは見出しと段落 (段落の中の改行は br) だけ。ほかの書式や HTML のタグは、書かれたままの文字として段落に入れる。
+  // コードのフェンス (``` や ~~~) から閉じるフェンスまでは解釈せず、フェンスの行も空行も含めて書かれたままの 1 つの段落にする。
+  function markdownBlocks(text) {
+    const blocks = [];
+    // 今の段落。空行と見出しとフェンスで閉じる。
+    let paragraph = null;
+    // 開いているフェンスの記号の並び (```` ``` ```` など)。閉じるまで、または応答の終わりまで続く。
+    let fence = null;
+    for (const line of text.split(/\r?\n/)) {
+      if (fence) {
+        paragraph.append(document.createElement("br"), line);
+        const closing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+        if (closing && closing[1][0] === fence[0] && closing[1].length >= fence.length) {
+          fence = null;
+          paragraph = null;
+        }
+        continue;
+      }
+      const opening = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+      if (opening && !(opening[1][0] === "`" && opening[2].includes("`"))) {
+        fence = opening[1];
+        paragraph = document.createElement("p");
+        paragraph.append(line);
+        blocks.push(paragraph);
+        continue;
+      }
+      // 文の後ろで開くフェンス (`前置き ```python` など)。Markdown ではフェンスではないが、続く行を見出しにすると
+      // コードの # が消える。フェンスとみなしても、文字が書かれたまま出るだけで何も失わない。
+      const trailing = /(?:^|[^`~])(`{3,}|~{3,})[\w+#.-]*[ \t]*$/.exec(line);
+      if (trailing && !line.slice(0, trailing.index + 1).includes(trailing[1])) {
+        fence = trailing[1];
+        if (paragraph) {
+          paragraph.append(document.createElement("br"), line);
+        } else {
+          paragraph = document.createElement("p");
+          paragraph.append(line);
+          blocks.push(paragraph);
+        }
+        continue;
+      }
+      const heading = /^(#{1,6})[ \t]+(\S.*)$/.exec(line);
+      if (heading) {
+        const element = document.createElement(`h${heading[1].length}`);
+        element.textContent = heading[2].trimEnd();
+        blocks.push(element);
+        paragraph = null;
+      } else if (!line.trim()) {
+        paragraph = null;
+      } else if (paragraph) {
+        paragraph.append(document.createElement("br"), line);
+      } else {
+        paragraph = document.createElement("p");
+        paragraph.append(line);
+        blocks.push(paragraph);
+      }
+    }
+    return blocks;
+  }
+
   function addBubble(role, text) {
     const bubble = document.createElement("div");
     bubble.className = `bubble ${role}`;
     const speaker = document.createElement("span");
     speaker.className = "speaker";
     speaker.textContent = SPEAKERS[role];
-    const body = document.createElement("p");
+    // 自分の発言は打ったとおりの文字で出す。
+    let body;
+    if (role === "assistant") {
+      body = document.createElement("div");
+      body.append(...markdownBlocks(text));
+    } else {
+      body = document.createElement("p");
+      body.textContent = text;
+    }
     body.className = "text";
-    body.textContent = text;
     bubble.append(speaker, body);
     chatMessages.append(bubble);
     chatMessages.scrollTop = chatMessages.scrollHeight;
@@ -300,16 +373,25 @@
     }
   }
 
-  // 送れなかった理由の表示。
+  // 送れなかった理由の表示。API が返す理由ごとに、次に何をすればよいかが分かる文言にする。
+  const failureReasons = {
+    llm_key_rejected: "AI の鍵 (ANTHROPIC_API_KEY) が正しくありません。鍵を直してから送り直してください",
+    llm_busy: "AI が混んでいます。少し待ってから送り直してください",
+    llm_unavailable: "AI に繋がりません",
+  };
+
   function failureReason(error) {
-    return error === "llm_unavailable" ? "AI に繋がりません" : "送信できませんでした";
+    return failureReasons[error] ?? "送信できませんでした";
   }
 
+  // AI に届かなかった、または鍵を断られた理由。混んでいるときは AI に届いているので含めない。
+  const llmUnreachedErrors = ["llm_unavailable", "llm_key_rejected"];
+
   // 送った結果を、どの会話を出していても状態のメニューの「AI への接続」に知らせる。通常の送信も、送れなかった知らせからの送り直しもここを通す。
-  // 応答が返ったら正常、AI に繋がらずに断られたら異常。それ以外の断り (元の会話が無いなど) では変えない。サーバに届かないときは呼ばない。
+  // 応答が返ったら正常、AI に届かずに (または鍵を断られて) 断られたら異常。それ以外の断り (混んでいる、元の会話が無いなど) では変えない。サーバに届かないときは呼ばない。
   function reportSent(ok, error) {
     if (ok) document.dispatchEvent(new CustomEvent("llm-reached", { detail: { ok: true } }));
-    else if (error === "llm_unavailable") document.dispatchEvent(new CustomEvent("llm-reached", { detail: { ok: false } }));
+    else if (llmUnreachedErrors.includes(error)) document.dispatchEvent(new CustomEvent("llm-reached", { detail: { ok: false } }));
   }
 
   function showUnsent(bubble, text, message) {
