@@ -80,7 +80,7 @@ def test_page_offers_deleting_a_conversation_after_confirming(start_app):
     assert re.search(r"if \(!window\.confirm\(.*?\)\) return;\n.*?method: \"DELETE\".*?if \(!response\.ok\) \{.*?\}\n.*?item\.remove\(\);", page, re.DOTALL)
     # 開いている会話が消えたら、会話の送受信が新しい会話を押したときと同じにする。
     assert 'new CustomEvent("conversation-deleted"' in page
-    assert "if (event.detail.conversationId === currentConversationId) newConversationButton.click();" in page
+    assert re.search(r"if \(event\.detail\.conversationId === currentConversationId\) \{\n.*?newConversationButton\.click\(\);", page, re.DOTALL)
     # 開いている途中の会話を消したら開かず、会話の送受信の待ちを開けなかったときと同じに解く (送信の結果が出ないままにしない)。
     assert re.search(r'if \(openingId === conversation\.id\) \{\n\s*openRequest\+\+;\n\s*document\.dispatchEvent\(new CustomEvent\("conversation-open-failed"\)\);', page)
 
