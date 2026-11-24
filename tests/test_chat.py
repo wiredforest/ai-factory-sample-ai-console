@@ -335,3 +335,32 @@ def test_page_says_when_the_ai_is_unreachable_and_puts_the_text_back(start_app):
     assert "。もう一度送信できます。" in page
     assert 'notice.className = "error"' in page
     assert "composerText.value = text" in page
+
+
+def test_a_resend_from_the_unsent_notice_updates_the_llm_status_by_the_same_rule_as_a_send(start_app):
+    # 送れなかった知らせからの送り直しも送信の 1 つ。通常の送信と同じ規則で「AI への接続」に知らせる (#61)。
+    page = start_app().get("/").body.decode("utf-8")
+    rule = re.search(r"function reportSent\(ok, error\) \{\n(.*?)\n  \}\n", page, re.DOTALL).group(1)
+    # 応答が返ったら正常、AI に届かずに断られたら異常 (#58 の llmUnreachedErrors)。それ以外の断りでは知らせない (= 変えない)。
+    assert rule.splitlines() == [
+        '    if (ok) document.dispatchEvent(new CustomEvent("llm-reached", { detail: { ok: true } }));',
+        '    else if (llmUnreachedErrors.includes(error)) document.dispatchEvent(new CustomEvent("llm-reached", { detail: { ok: false } }));',
+    ]
+    # 規則はここ 1 箇所だけ。送信も送り直しも、ほかで llm-reached を送らない。
+    assert page.count('new CustomEvent("llm-reached"') == 2
+    send = re.search(r"async function sendMessage\(\) \{\n(.*?)\n  \}\n", page, re.DOTALL).group(1)
+    resend = re.search(r'resend\.addEventListener\("click", async \(\) => \{\n(.*?)\n    \}\);\n', page, re.DOTALL).group(1)
+    for body in (send, resend):
+        # サーバに届かず fetch が投げたときは知らせない。
+        unreachable = re.search(r"\} catch \(error\) \{\n(.*?)\n +\}\n", body, re.DOTALL).group(1)
+        assert "reportSent(" not in unreachable
+        # 断られたら、本文の error を渡して規則に決めさせる。
+        refused = re.search(r"if \(!response\.ok\) \{\n(.*?)\n +\}\n", body, re.DOTALL).group(1)
+        assert re.findall(r"reportSent\(.*?\);", refused) == ["reportSent(false, error);"]
+        assert refused.index("const error = await errorOf(response);") < refused.index("reportSent(false, error);")
+        assert refused.index("reportSent(false, error);") < refused.index("throw ")
+        # 応答が返ったら、会話の一覧に知らせたあとで正常にする。
+        replied = body.split("const { conversation_id, messages } = await response.json();", 1)[1]
+        assert re.findall(r"reportSent\(.*?\);", replied) == ["reportSent(true);"]
+        assert replied.index('new CustomEvent("conversation-updated"') < replied.index("reportSent(true);")
+        assert replied.index("reportSent(true);") < replied.index("} finally {")
