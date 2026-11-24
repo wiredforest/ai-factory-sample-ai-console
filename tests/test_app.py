@@ -66,6 +66,15 @@ def test_page_shows_the_three_areas(start_app):
     assert "会話がまだありません" in parser.text["history"]
 
 
+def test_page_offers_deleting_a_conversation_after_confirming(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    assert "削除" in page
+    assert "取り消せません" in page
+    parser = TextById()
+    parser.feed(page)
+    assert "会話を削除できませんでした" in parser.text["history"]
+
+
 def test_listens_on_loopback_only(start_app):
     app = start_app()
     assert app.startup_line == f"listening on http://127.0.0.1:{app.port}"

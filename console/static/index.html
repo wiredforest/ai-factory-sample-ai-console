@@ -21,10 +21,11 @@
   #status { border-left: 1px solid #ddd; background: #fff; }
   .empty { color: #777; }
   #conversations { list-style: none; margin: 0; padding: 0; }
-  #conversations li { border-bottom: 1px solid #eee; }
-  #conversations button { display: block; width: 100%; padding: 0.5rem; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
-  #conversations button:hover { background: #f2f2ef; }
-  #conversations li[aria-current="true"] button { background: #e3effa; }
+  #conversations li { display: flex; align-items: flex-start; border-bottom: 1px solid #eee; }
+  #conversations .open { display: block; flex: 1; min-width: 0; padding: 0.5rem; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+  #conversations .open:hover { background: #f2f2ef; }
+  #conversations li[aria-current="true"] .open { background: #e3effa; }
+  #conversations .delete { margin: 0.5rem 0.25rem; font: inherit; font-size: 0.8rem; }
   #conversations .title { display: block; overflow-wrap: anywhere; }
   #conversations time { font-size: 0.8rem; color: #777; }
   #chat { display: flex; flex-direction: column; overflow: hidden; }
@@ -53,6 +54,7 @@
     <h2>履歴</h2>
     <p class="empty" hidden>会話がまだありません</p>
     <p class="history-error" hidden>会話の履歴を読めませんでした</p>
+    <p class="history-error delete-error" role="alert" hidden>会話を削除できませんでした</p>
     <ul id="conversations"></ul>
   </section>
   <section id="chat">
@@ -76,8 +78,11 @@
   const historyList = document.getElementById("conversations");
   const historyEmpty = document.querySelector("#history .empty");
   const historyError = document.querySelector("#history .history-error");
+  const deleteError = document.querySelector("#history .delete-error");
   let historyRequest = 0;
   let openRequest = 0;
+  // 最後に開こうとした会話の id。
+  let openingId = null;
   // 今の会話の id。一覧を読み直しても、その項目に aria-current を付け直す。
   let currentHistoryId = null;
 
@@ -110,6 +115,7 @@
       item.dataset.conversationId = conversation.id;
       const open = document.createElement("button");
       open.type = "button";
+      open.className = "open";
       open.addEventListener("click", () => openConversation(conversation.id));
       const title = document.createElement("span");
       title.className = "title";
@@ -118,7 +124,13 @@
       time.dateTime = conversation.updated_at;
       time.textContent = localTime(conversation.updated_at);
       open.append(title, time);
-      item.append(open);
+      // 会話を開くボタンとは別のボタン。押しても会話を開かない。
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "delete";
+      remove.textContent = "削除";
+      remove.addEventListener("click", () => deleteConversation(conversation, remove));
+      item.append(open, remove);
       return item;
     }));
     markCurrent();
@@ -139,6 +151,7 @@
   async function openConversation(conversationId) {
     // 続けて選んだら、最後に選んだ会話だけを開く。
     const request = ++openRequest;
+    openingId = conversationId;
     const response = await fetch(`/api/conversations/${conversationId}`);
     if (!response.ok) throw new Error(`GET /api/conversations/${conversationId}: ${response.status}`);
     const { id, messages } = await response.json();
@@ -147,6 +160,39 @@
     markCurrent();
     // 会話の送受信は conversation-opened を受けて、会話の領域をこのメッセージで置き換え、今の会話にする。
     document.dispatchEvent(new CustomEvent("conversation-opened", { detail: { conversationId: id, messages } }));
+  }
+
+  async function deleteConversation(conversation, button) {
+    // 取り消せないので、確かめてから送る。取りやめたら何も送らない。
+    if (!window.confirm(`「${conversation.title}」を削除します。取り消せません。よろしいですか?`)) return;
+    button.disabled = true;
+    deleteError.hidden = true;
+    let response;
+    try {
+      response = await fetch(`/api/conversations/${conversation.id}`, { method: "DELETE" });
+    } catch (error) {
+      // サーバに届かなかった。消えたかどうか分からないので、一覧から外さない。
+      deleteError.hidden = false;
+      button.disabled = false;
+      throw error;
+    }
+    if (!response.ok) {
+      // 消えていないものを一覧から外すと、消えたように見えてしまう。
+      deleteError.hidden = false;
+      button.disabled = false;
+      throw new Error(`DELETE /api/conversations/${conversation.id}: ${response.status}`);
+    }
+    // 待っている間に一覧を読み直していたら、押した項目はもう別の要素になっている。今の一覧から id で探す。
+    for (const item of historyList.children) {
+      if (Number(item.dataset.conversationId) === conversation.id) item.remove();
+    }
+    historyEmpty.hidden = historyList.children.length > 0;
+    // 消す前に読み始めた会話は、読み終えても開かない。開くと、消えた id で送ってしまう。
+    if (openingId === conversation.id) openRequest++;
+    // 消す前に始めた読み直しは、消した会話を一覧に戻してしまう。記録の今の一覧で置き換える。
+    loadHistory();
+    // 会話の送受信は conversation-deleted を受けて、消した会話を開いていたら新しい会話にする (conversation-new が返ってくる)。
+    document.dispatchEvent(new CustomEvent("conversation-deleted", { detail: { conversationId: conversation.id } }));
   }
 
   // 会話の送受信は、送信が成功するたびに document へ conversation-updated を送る。
@@ -265,8 +311,8 @@
     currentConversationId = conversationId;
   });
 
-  // 押しただけでは会話を作らない。次の送信が conversation_id: null で送られ、成功したときに記録される。
-  newConversationButton.addEventListener("click", () => {
+  // 会話を作らずに新しい会話にする。次の送信が conversation_id: null で送られ、成功したときに記録される。
+  function startNewConversation() {
     chatView++;
     // 送れなかった表示も会話の領域の中にあるので、吹き出しと一緒に消える。
     chatMessages.replaceChildren();
@@ -275,6 +321,12 @@
     currentConversationId = null;
     document.dispatchEvent(new CustomEvent("conversation-new"));
     composerText.focus();
+  }
+
+  newConversationButton.addEventListener("click", startNewConversation);
+  // 開いている会話が消えたら、その id では送らない。消えた id は、次に作る会話に使い直されることがある。
+  document.addEventListener("conversation-deleted", (event) => {
+    if (event.detail.conversationId === currentConversationId) startNewConversation();
   });
 
   composer.addEventListener("submit", (event) => {
