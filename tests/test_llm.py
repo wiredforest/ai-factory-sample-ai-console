@@ -7,7 +7,8 @@ import urllib.request
 
 import pytest
 
-from console import config, llm
+from console import chat, config, llm
+from console.db import Database
 
 FRUIT = [{"role": "user", "content": "私の好きな果物はびわです"}]
 FRUIT_FOLLOW_UP = [
@@ -61,6 +62,11 @@ def api_key(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
 
 
+def responder(name: str) -> llm.Responder:
+    """アプリと同じく、環境変数から読んだ設定で応答役を作る。"""
+    return llm.responder(name, config.load().model)
+
+
 def http_error(code: int) -> urllib.error.HTTPError:
     return urllib.error.HTTPError(llm.API_URL, code, "error", hdrs=None, fp=None)
 
@@ -70,23 +76,23 @@ def test_every_llm_choice_has_a_responder():
 
 
 def test_fake_replies_with_the_count_and_the_last_utterance():
-    assert llm.responder("fake").reply(FRUIT) == "fake reply #1: 私の好きな果物はびわです"
+    assert responder("fake").reply(FRUIT) == "fake reply #1: 私の好きな果物はびわです"
 
 
 def test_fake_counts_every_user_message_in_the_history():
-    assert llm.responder("fake").reply(FRUIT_FOLLOW_UP) == "fake reply #2: 私の好きな果物は何ですか"
+    assert responder("fake").reply(FRUIT_FOLLOW_UP) == "fake reply #2: 私の好きな果物は何ですか"
 
 
 def test_fake_is_reachable_and_fake_down_is_not():
-    assert llm.responder("fake").reachable() is True
-    assert llm.responder("fake-down").reachable() is False
+    assert responder("fake").reachable() is True
+    assert responder("fake-down").reachable() is False
     with pytest.raises(llm.Unreachable):
-        llm.responder("fake-down").reply(FRUIT)
+        responder("fake-down").reply(FRUIT)
 
 
 def test_anthropic_without_a_key_stays_off_the_network(stub_urlopen):
     fake = stub_urlopen(answer={})
-    anthropic = llm.responder("anthropic")
+    anthropic = responder("anthropic")
     with pytest.raises(llm.Unreachable):
         anthropic.reply(FRUIT)
     assert anthropic.reachable() is False
@@ -95,7 +101,7 @@ def test_anthropic_without_a_key_stays_off_the_network(stub_urlopen):
 
 def test_anthropic_posts_the_whole_history_and_joins_the_text(stub_urlopen, api_key):
     fake = stub_urlopen(answer={"content": [{"type": "text", "text": "こんにちは"}]})
-    assert llm.responder("anthropic").reply(FRUIT_FOLLOW_UP) == "こんにちは"
+    assert responder("anthropic").reply(FRUIT_FOLLOW_UP) == "こんにちは"
     [(request, timeout)] = fake.calls
     assert request.get_method() == "POST"
     assert request.full_url == "https://api.anthropic.com/v1/messages"
@@ -109,13 +115,47 @@ def test_anthropic_posts_the_whole_history_and_joins_the_text(stub_urlopen, api_
     assert timeout == 30
 
 
+@pytest.mark.parametrize(("value", "model"), [
+    ("claude-sonnet-5-5", "claude-sonnet-5-5"),
+    (None, "claude-haiku-5-5"),
+], ids=["sonnet", "unset"])
+def test_anthropic_sends_the_model_from_console_model(stub_urlopen, api_key, monkeypatch, value, model):
+    if value is not None:
+        monkeypatch.setenv("CONSOLE_MODEL", value)
+    fake = stub_urlopen(answer={"content": [{"type": "text", "text": "こんにちは"}]})
+    responder("anthropic").reply(FRUIT)
+    [(request, _)] = fake.calls
+    assert request.full_url == "https://api.anthropic.com/v1/messages"
+    assert json.loads(request.data)["model"] == model
+
+
+def test_a_past_conversation_continues_with_the_model_chosen_after_a_restart(stub_urlopen, api_key, monkeypatch):
+    fake = stub_urlopen(answer={"content": [{"type": "text", "text": "びわですね"}]})
+    path = config.load().db_path
+    monkeypatch.setenv("CONSOLE_MODEL", "claude-haiku-5-5")
+    with Database(path) as db:
+        first = chat.send(db, responder("anthropic"), {"conversation_id": None, "text": FRUIT[0]["content"]})
+    monkeypatch.setenv("CONSOLE_MODEL", "claude-opus-5-5")
+    with Database(path) as db:
+        chat.send(db, responder("anthropic"), {"conversation_id": first["conversation_id"], "text": "私の好きな果物は何ですか"})
+        assert len(db.conversation(first["conversation_id"]).messages) == 4
+    [before, after] = [json.loads(request.data) for request, _ in fake.calls]
+    assert before["model"] == "claude-haiku-5-5"
+    assert after["model"] == "claude-opus-5-5"
+    assert after["messages"] == [
+        {"role": "user", "content": "私の好きな果物はびわです"},
+        {"role": "assistant", "content": "びわですね"},
+        {"role": "user", "content": "私の好きな果物は何ですか"},
+    ]
+
+
 def test_anthropic_skips_blocks_that_are_not_text(stub_urlopen, api_key):
     stub_urlopen(answer={"content": [
         {"type": "text", "text": "前半"},
         {"type": "thinking", "thinking": "..."},
         {"type": "text", "text": "後半"},
     ]})
-    assert llm.responder("anthropic").reply(FRUIT) == "前半後半"
+    assert responder("anthropic").reply(FRUIT) == "前半後半"
 
 
 @pytest.mark.parametrize("error", [
@@ -126,14 +166,14 @@ def test_anthropic_skips_blocks_that_are_not_text(stub_urlopen, api_key):
 def test_anthropic_failures_become_unreachable_without_the_key(stub_urlopen, api_key, error):
     stub_urlopen(error=error)
     with pytest.raises(llm.Unreachable) as raised:
-        llm.responder("anthropic").reply(FRUIT)
+        responder("anthropic").reply(FRUIT)
     assert "test-key" not in str(raised.value)
 
 
 def test_anthropic_strips_the_line_break_around_the_key(stub_urlopen, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key\r\n")
     fake = stub_urlopen(answer={"content": [{"type": "text", "text": "こんにちは"}]})
-    assert llm.responder("anthropic").reply(FRUIT) == "こんにちは"
+    assert responder("anthropic").reply(FRUIT) == "こんにちは"
     [(request, _)] = fake.calls
     assert request.get_header("X-api-key") == "test-key"
 
@@ -142,7 +182,7 @@ def test_anthropic_strips_the_line_break_around_the_key(stub_urlopen, monkeypatc
 def test_anthropic_key_unfit_for_a_header_becomes_unreachable_without_the_key(stub_urlopen, monkeypatch, key):
     monkeypatch.setenv("ANTHROPIC_API_KEY", key)
     stub_urlopen(answer={})
-    anthropic = llm.responder("anthropic")
+    anthropic = responder("anthropic")
     with pytest.raises(llm.Unreachable) as raised:
         anthropic.reply(FRUIT)
     assert "SECRET" not in "".join(traceback.format_exception(raised.value))
@@ -158,7 +198,7 @@ def test_anthropic_key_unfit_for_a_header_becomes_unreachable_without_the_key(st
 def test_anthropic_reply_of_an_unexpected_shape_becomes_unreachable(stub_urlopen, api_key, answer):
     stub_urlopen(answer=answer)
     with pytest.raises(llm.Unreachable):
-        llm.responder("anthropic").reply(FRUIT)
+        responder("anthropic").reply(FRUIT)
 
 
 @pytest.mark.parametrize(("stub", "reachable"), [
@@ -168,7 +208,7 @@ def test_anthropic_reply_of_an_unexpected_shape_becomes_unreachable(stub_urlopen
 ], ids=["200", "200-not-json", "401"])
 def test_anthropic_check_lists_the_models(stub_urlopen, api_key, stub, reachable):
     fake = stub_urlopen(**stub)
-    assert llm.responder("anthropic").reachable() is reachable
+    assert responder("anthropic").reachable() is reachable
     [(request, timeout)] = fake.calls
     assert request.get_method() == "GET"
     assert request.full_url == "https://api.anthropic.com/v1/models"
@@ -180,4 +220,4 @@ def test_calling_urlopen_without_a_stub_fails_the_test(api_key):
     with pytest.raises(pytest.fail.Exception):
         urllib.request.urlopen("https://api.anthropic.com/v1/models")
     with pytest.raises(pytest.fail.Exception):
-        llm.responder("anthropic").reply(FRUIT)
+        responder("anthropic").reply(FRUIT)

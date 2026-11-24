@@ -1,8 +1,10 @@
+import json
 import os
 import re
 import subprocess
 from html.parser import HTMLParser
 
+import pytest
 from conftest import ROOT, app_argv, free_port
 
 
@@ -107,6 +109,22 @@ def test_unknown_llm_exits_2():
     result = run_until_exit(CONSOLE_LLM="bogus")
     assert result.returncode == 2
     assert "CONSOLE_LLM" in result.stderr
+
+
+@pytest.mark.parametrize("model", ["no-such-model", ""], ids=["unknown-name", "empty"])
+@pytest.mark.parametrize(("llm", "status_oks"), [
+    ("fake", [True, True, True]),
+    ("fake-down", [True, False, True]),
+])
+def test_fake_responders_ignore_console_model(start_app, model, llm, status_oks):
+    app = start_app(CONSOLE_LLM=llm, CONSOLE_MODEL=model)
+    status = json.loads(app.get("/api/status").body)["items"]
+    assert [(item["label"], item["ok"]) for item in status] == list(zip(["アプリ自身", "AI への接続", "会話の記録"], status_oks))
+    if llm == "fake":
+        r = app.post_json("/api/messages", {"conversation_id": None, "text": "りんごの話"})
+        assert r.status == 200
+        assert json.loads(r.body)["messages"][-1] == {"role": "assistant", "text": "fake reply #1: りんごの話"}
+    assert app.proc.poll() is None
 
 
 def test_port_in_use_exits_2_with_one_line_and_leaves_the_first_running(start_app):
