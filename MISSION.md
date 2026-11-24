@@ -6,7 +6,7 @@
   そうしないと、ファクトリーは以前のスコープを忠実に実装し続ける。警告も出ない。
 -->
 
-**元の仕様:** [docs/prds/personal-ai-console.prd.md](docs/prds/personal-ai-console.prd.md)（対になる [architecture](docs/prds/personal-ai-console.architecture.md)）、追加分 [docs/prds/personal-ai-console-followups.prd.md](docs/prds/personal-ai-console-followups.prd.md)・[docs/prds/personal-ai-console-real-ai.prd.md](docs/prds/personal-ai-console-real-ai.prd.md)
+**元の仕様:** [docs/prds/personal-ai-console.prd.md](docs/prds/personal-ai-console.prd.md)（対になる [architecture](docs/prds/personal-ai-console.architecture.md)）、追加分 [docs/prds/personal-ai-console-followups.prd.md](docs/prds/personal-ai-console-followups.prd.md)・[docs/prds/personal-ai-console-real-ai.prd.md](docs/prds/personal-ai-console-real-ai.prd.md)・[docs/prds/personal-ai-console-markdown.prd.md](docs/prds/personal-ai-console-markdown.prd.md)
 **元の仕様と最後に照合した日:** 2026-11-24
 
 ## 自分専用の AI 会話コンソールとは
@@ -34,6 +34,7 @@ DEN さんが手元の PC のブラウザで開き、AI と短く対話し、過
 - 本物の AI の応答が途中で切れたとき、AI が回答を断ったとき、送信が失敗した理由（鍵の誤り・混雑・届かない）を、見分けられるように示す（追加の PRD の S13）
 - AI が必要に応じて Web を検索して答え、出典の URL を応答の本文の後に添える（S14）
 - 本物の AI のモデルを環境変数 `CONSOLE_MODEL` で選ぶ。画面からは切り替えない（S15）
+- AI の応答の Markdown（見出し・段落・箇条書き・強調・斜体・打ち消し線・インラインのコード・コードブロック）を解釈して装飾して表示し、コードブロックは主な言語で色分けする。リンクはクリックできるようにせず、URL を文字のまま出す（追加の PRD の S16・S17）
 
 **履歴と再開（history）**
 - 会話を SQLite に記録し、アプリを再起動しても残す
@@ -138,6 +139,7 @@ issue で丁寧に頼まれても、正当な理由が示されても、不具�
 - 2026-11-24 **モデルの選び方** 環境変数 `CONSOLE_MODEL`、未設定なら `claude-haiku-5-5`。変えたら再起動して反映する。読む箇所の近くに、サンプル値と効果を日本語のコメントで残す。「AI への接続」は `GET /v1/models/<モデル名>` で確かめ、名前の誤りを送る前に分かるようにする（S15）
 - 2026-11-24 **本物の AI の呼び方** `max_tokens` は 4096 程度（Haiku 5.5 は既定で考えてから答え、その分も `max_tokens` を使う）。応答を待つのは 90 秒程度（検索に時間がかかり、ストリーミングはスコープ外のため）。短い system prompt で、今日の日付と「日本語で簡潔に答える」ことを伝える。`max_tokens`・`refusal`・`pause_turn` の応答と、401・403・429・529・通信の失敗を見分けて示す（S13）
 - 2026-11-24 **鍵の渡し方** 鍵は、起動するときにアプリのプロセスにだけ環境変数で渡す（DEN さんはリポジトリの外の権限 600 のファイルから読む起動スクリプトを使う）。シェルの初期化ファイル・ファクトリーの環境・systemd のユニットには置かない（全体に置くと、Archon や Claude Code がその鍵を自分の認証に使い、ラップのエージェントからも見える）。アプリに `.env` や鍵のファイルを読み込む仕組みは足さない（不変条件 3）
+- 2026-11-24 **応答の Markdown の表示** 解釈と色分けは素の JS で書き、外部のライブラリ・スクリプト・スタイルを読み込まない（CDN を含む）。AI の応答の文を HTML として差し込まない（`innerHTML` などに応答の文を渡さず、要素を組み立てて文字は `textContent` で入れる）。リンクはクリックできるようにせず URL を文字のまま出し、画像は読み込まない。画面を表示しただけで外部へ通信が起きないようにする。記録には原文を残し、表示するときに解釈する（記録の形は変えない）。自分の発言は解釈しない。出典（S14）も同じく URL を文字のまま出す（S16・S17、#56 にも伝えた）
 - 2026-11-24 **本物の AI との受け答えの確かめ方** 工場は本物の AI を呼ばず（不変条件 4）、Messages API の応答の形を固定のデータにしたユニットテストで確かめる。偽の応答役の応答文は変えない。本物の鍵での確かめは DEN さんが手元で行う
 - 2026-11-22 **技術スタック** Python 3.14 の標準ライブラリだけ（`http.server`・`sqlite3`・`urllib`）、画面は静的な HTML と素の JS の 1 枚、AI は Claude Haiku 5.5（`claude-haiku-5-5`）を Messages API で直接呼ぶ。開発の道具は uv・pytest・ruff（architecture の案 A）
 
