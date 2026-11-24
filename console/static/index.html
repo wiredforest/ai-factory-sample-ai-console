@@ -60,6 +60,8 @@
   .bubble .text .hl-number { color: #0550ae; }
   .bubble .text .code-info { color: #57606a; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8em; }
   .bubble .text .code-info + pre { margin-top: 0.25em; }
+  .bubble .text :is(ul, ol) { padding-left: 2em; }
+  .bubble .text li > * { margin: 0.25em 0 0; }
   .bubble.user { align-self: flex-end; background: #d7ecff; }
   .bubble.assistant { align-self: flex-start; background: #fff; border: 1px solid #ddd; }
   #messages .error { align-self: flex-end; margin: 0; color: #c62828; font-weight: bold; }
@@ -295,7 +297,9 @@
   }
 
   // AI の応答の原文を Markdown のブロックとして読み、吹き出しの本文に並べる要素を返す。記録は原文のままで、出すたびにここで組み立てる。
-  // 解釈するのは見出しと段落 (段落の中の改行は br) とコードブロックだけ。ほかの書式や HTML のタグは、書かれたままの文字として段落に入れる。
+  // 解釈するのは見出しと段落 (段落の中の改行は br) と箇条書きとコードブロックだけ。ほかの書式や HTML のタグは、書かれたままの文字として段落に入れる。
+  // 箇条書きは、印 (-・*・+ か、数字と .) の後に空白が続く行。前の項目の印より 2 文字以上深く字下げした項目は、その項目の中の入れ子のリストにする。
+  // 入れ子は何段でも同じ規則で深くする。
   // 行頭のフェンス (``` や ~~~) から閉じるフェンスまではコードブロック (pre の中の code) にし、中身は解釈せずに文字のまま入れる。
   // 閉じないまま応答が終わったら、開きのフェンスの行から終わりまでを書かれたままの 1 つの段落にする。
   function markdownBlocks(text) {
@@ -305,6 +309,8 @@
     // 開いているフェンス。記号の並び (```` ``` ```` など) と、コードブロックなら開きの行・字下げ・情報 (フェンスの後の文字)・言語 (その最初の語)・中身の行を持つ。
     // 閉じるまで、または応答の終わりまで続く。
     let fence = null;
+    // 開いている箇条書き。外側から順に、項目の印の位置 (字下げの幅)・リストの要素・最後の項目。空行を挟んでも続く。
+    let lists = [];
     for (const line of text.split(/\r?\n/)) {
       if (fence) {
         const closing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
@@ -336,6 +342,7 @@
         const info = opening[3].trim();
         fence = { marker: opening[2], line, indent: opening[1].length, info, lang: info.split(/\s+/)[0], lines: [] };
         paragraph = null;
+        lists = [];
         continue;
       }
       // 文の後ろで開くフェンス (`前置き ```python` など)。Markdown ではフェンスではないが、続く行を見出しにすると
@@ -343,6 +350,7 @@
       const trailing = /(?:^|[^`~])(`{3,}|~{3,})[\w+#.-]*[ \t]*$/.exec(line);
       if (trailing && !line.slice(0, trailing.index + 1).includes(trailing[1])) {
         fence = { marker: trailing[1] };
+        lists = [];
         if (paragraph) {
           paragraph.append(document.createElement("br"), line);
         } else {
@@ -353,19 +361,68 @@
         continue;
       }
       const heading = /^(#{1,6})[ \t]+(\S.*)$/.exec(line);
+      const item = /^([ \t]*)([-*+]|\d{1,9}\.)[ \t]+(\S.*)$/.exec(line);
       if (heading) {
         const element = document.createElement(`h${heading[1].length}`);
         element.textContent = heading[2].trimEnd();
         blocks.push(element);
         paragraph = null;
+        lists = [];
+      } else if (item) {
+        const indent = indentWidth(item[1]);
+        const tag = item[2].endsWith(".") ? "ol" : "ul";
+        // 印の位置がこの項目より深い段は閉じる。残った一番深い段より 2 文字以上深ければ、その段の最後の項目の中の入れ子にする。
+        let closed = null;
+        while (lists.length && lists.at(-1).indent > indent) closed = lists.pop();
+        const parent = lists.at(-1);
+        const nested = parent && indent >= parent.indent + 2;
+        let level = parent;
+        if (nested) {
+          // 閉じた段がその項目の中の最後のリストなら、字下げが少し浅くなってもそこに続ける (`    - ` の後の `  - `)。
+          level = closed && parent.item.lastElementChild === closed.list ? closed : null;
+          if (level) {
+            level.indent = indent;
+            lists.push(level);
+          }
+        }
+        // 同じ段でも、印の種類 (- などと数字) が変わったら別のリストにする。
+        if (!level || level.list.localName !== tag) {
+          const list = document.createElement(tag);
+          const start = Number.parseInt(item[2], 10);
+          if (tag === "ol" && start !== 1) list.start = start;
+          if (nested) {
+            parent.item.append(list);
+          } else if (level?.list.parentNode) {
+            // 一番外の段のリストはまだどこにも入っていないので、after が効かない。blocks に足す。
+            level.list.after(list);
+          } else {
+            blocks.push(list);
+          }
+          if (level) lists.pop();
+          level = { indent, list, item: null };
+          lists.push(level);
+        }
+        level.item = document.createElement("li");
+        level.item.append(item[3]);
+        level.list.append(level.item);
+        paragraph = level.item;
       } else if (!line.trim()) {
         paragraph = null;
       } else if (paragraph) {
-        paragraph.append(document.createElement("br"), line);
+        // 空行を挟まずに続く行は、段落でも項目でも、その続き。項目の続きの行の字下げは出さない。
+        paragraph.append(document.createElement("br"), lists.length ? line.trimStart() : line);
       } else {
+        // 空行の後の行は、項目の印より 2 文字以上深く字下げしていれば、その項目の中の段落。そうでなければ箇条書きを閉じる。
+        const indent = indentWidth(/^[ \t]*/.exec(line)[0]);
+        while (lists.length && indent < lists.at(-1).indent + 2) lists.pop();
         paragraph = document.createElement("p");
-        paragraph.append(line);
-        blocks.push(paragraph);
+        if (lists.length) {
+          paragraph.append(line.trimStart());
+          lists.at(-1).item.append(paragraph);
+        } else {
+          paragraph.append(line);
+          blocks.push(paragraph);
+        }
       }
     }
     // 閉じていないコードブロックは解釈せず、文字を失わないように書かれたまま出す。
@@ -461,6 +518,13 @@
     if (rules) code.replaceChildren(highlighted(code.textContent, rules));
     pre.append(code);
     return pre;
+  }
+
+  // 行頭の空白とタブの幅。タブは次の 4 の倍数の位置まで進める。
+  function indentWidth(indent) {
+    let width = 0;
+    for (const char of indent) width = char === "\t" ? width + 4 - (width % 4) : width + 1;
+    return width;
   }
 
   function addBubble(role, text) {
