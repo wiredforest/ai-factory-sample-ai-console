@@ -294,6 +294,84 @@ def test_page_keeps_the_text_after_the_fence_language_visible_above_the_code_blo
     assert "visibility" not in rule[1]
 
 
+def highlight_rules_of(page: str, constant: str) -> str:
+    rules = re.search(rf"const {constant} = \{{\n(.*?)\n  \}};", page, re.DOTALL)
+    assert rules, constant
+    return rules[1]
+
+
+def keywords_of(rules: str) -> set[str]:
+    listed = re.search(r"keywords: \[(.*?)\]", rules, re.DOTALL)
+    assert listed
+    return set(re.findall(r'"(\w+)"', listed[1]))
+
+
+def test_page_colours_only_ts_js_python_and_bash_code_blocks(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    # 色分けするのはこの 10 個の言語の指定 (大文字小文字は問わない) だけ。ほかの言語や指定なしの code は文字だけのまま。
+    aliases = dict(re.findall(r'\["(\w+)", (\w+_HIGHLIGHT)\]', page))
+    assert aliases == {
+        "typescript": "SCRIPT_HIGHLIGHT", "ts": "SCRIPT_HIGHLIGHT", "javascript": "SCRIPT_HIGHLIGHT", "js": "SCRIPT_HIGHLIGHT",
+        "python": "PYTHON_HIGHLIGHT", "py": "PYTHON_HIGHLIGHT",
+        "bash": "BASH_HIGHLIGHT", "sh": "BASH_HIGHLIGHT", "shell": "BASH_HIGHLIGHT",
+    }
+    # 中身はまず文字のまま入れ、色分けする言語のときだけ、同じ文字を span で包んだものに置き換える。
+    plain = 'code.textContent = fence.lines.map((line) => line.replace(indent, "")).join("\\n");'
+    coloured = "const rules = HIGHLIGHT_RULES.get(fence.lang.toLowerCase());\n"
+    coloured += "    if (rules) code.replaceChildren(highlighted(code.textContent, rules));"
+    assert plain + "\n    " + coloured in page
+    assert page.count("highlighted(") == 2
+    # 色分けは 1 つの関数で、span は createElement で作り、文字は textContent で入れる。
+    function = re.search(r"function highlighted\(source, rules\) \{\n(.*?)\n  \}\n", page, re.DOTALL)
+    assert function
+    assert 'document.createElement("span")' in function[1]
+    assert "span.className = `hl-${kind}`;" in function[1]
+    assert "span.textContent = text;" in function[1]
+    # 包まれない文字も、間と最後の分を落とさずに入れる。
+    assert "fragment.append(source.slice(last, match.index));" in function[1]
+    assert "fragment.append(source.slice(last));" in function[1]
+    # コメントと文字列を語より先に取るので、その中の語はキーワードにならない。
+    assert "(${rules.comments.join(\"|\")})|(${rules.strings.join(\"|\")})|(${number})|(${rules.word})" in function[1]
+
+
+def test_page_lists_the_keywords_strings_and_comments_of_each_coloured_language(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    script = highlight_rules_of(page, "SCRIPT_HIGHLIGHT")
+    assert keywords_of(script) >= {
+        "const", "let", "var", "function", "return", "if", "else", "for", "while", "class", "new", "import",
+        "export", "from", "async", "await", "typeof", "interface", "type",
+    }
+    assert "String.raw`\\/\\/.*`" in script
+    assert "String.raw`\\/\\*[\\s\\S]*?\\*\\/`" in script
+    python = highlight_rules_of(page, "PYTHON_HIGHLIGHT")
+    assert keywords_of(python) >= {
+        "def", "return", "if", "elif", "else", "for", "while", "in", "class", "import", "from", "as", "lambda",
+        "None", "True", "False", "and", "or", "not", "with", "try", "except",
+    }
+    assert "String.raw`#.*`" in python
+    assert 'String.raw`"""[\\s\\S]*?"""`' in python
+    bash = highlight_rules_of(page, "BASH_HIGHLIGHT")
+    assert keywords_of(bash) >= {"if", "then", "else", "elif", "fi", "for", "in", "do", "done", "while", "case", "esac", "function"}
+    # シェルの # は行頭か空白の後だけがコメント。
+    assert "String.raw`(?<!\\S)#.*`" in bash
+    # 数値は語の一部でない十進の整数と小数。
+    assert "String.raw`(?<![\\w$.])\\d+(?:\\.\\d+)?(?![\\w$])`" in page
+
+
+def test_page_gives_each_highlight_class_its_own_colour(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    colours = {}
+    for kind in ("keyword", "string", "comment", "number"):
+        rule = re.search(rf"\.bubble \.text \.hl-{kind} \{{([^}}]*)\}}", page)
+        assert rule, kind
+        colours[kind] = re.search(r"(?<!-)color: (#\w+);", rule[1])[1].lower()
+    pre = re.search(r"\.bubble \.text pre \{([^}]*)\}", page)
+    base = re.search(r"(?<!-)color: (#\w+);", pre[1])[1].lower()
+    # 4 つとも互いに違い、どれもコードの地の文字の色と違う。
+    assert len(set(colours.values())) == 4
+    assert base not in colours.values()
+
+
 def test_page_shows_list_items_only_where_a_marker_is_followed_by_a_space(start_app):
     page = start_app().get("/").body.decode("utf-8")
     # 項目の行の判定はページの JS の正規表現そのもの。Python の re でも同じ意味になる書き方なので、取り出して行に当てる。
@@ -318,41 +396,59 @@ def test_page_shows_list_items_only_where_a_marker_is_followed_by_a_space(start_
     assert 'char === "\\t" ? width + 4 - (width % 4)' in page
 
 
-def test_page_shows_links_as_text_and_leaves_images_tags_and_broken_links_as_written(start_app):
+def test_page_interprets_emphasis_and_inline_code_only_inside_assistant_headings_paragraphs_and_items(start_app):
     page = start_app().get("/").body.decode("utf-8")
-    # リンクの書式はページの JS の正規表現そのもの。Python の re でも同じ意味になる書き方なので、取り出して JS と同じ規則で置き換える。
-    found = re.search(r"const LINK = /(.+)/g;", page)
-    assert found
-    link = re.compile(found.group(1))
-    assert "(ticks ? match : `${text} (${url})`)" in page
+    # 見出し・段落 (続きの行も)・項目・項目の中の段落の文字は、行ごとに inlineNodes で解釈してから入れる。
+    assert "element.append(...inlineNodes(heading[2].trimEnd()));" in page
+    assert "level.item.append(...inlineNodes(item[3]));" in page
+    assert 'paragraph.append(document.createElement("br"), ...inlineNodes(lists.length ? line.trimStart() : line));' in page
+    assert "paragraph.append(...inlineNodes(line.trimStart()));" in page
+    assert "paragraph.append(...inlineNodes(line));" in page
+    # 強調は strong、斜体は em、打ち消し線は del。インラインのコードの中身は解釈せず、文字のまま code に入れる。
+    assert 'document.createElement(closer.char === "~" ? "del" : used === 2 ? "strong" : "em")' in page
+    assert "code.textContent = line.slice(end, close);" in page
+    # 対にならなかった記号は、書かれたままの文字に戻す。語の中の _ は開きも閉じもしない。
+    assert "return items.map(literal);" in page
+    assert "return item.char ? item.char.repeat(item.count) : item;" in page
+    assert 'if (char === "_") {' in page
+    # 自分の発言は解釈しない。
+    assert "body.textContent = text;" in page
+    # インラインのコードは等幅で出す (コードブロックの code は pre の書式のまま)。
+    rule = re.search(r"\.bubble \.text :not\(pre\) > code \{([^}]*)\}", page)
+    assert rule
+    assert "monospace" in rule[1]
 
-    def link_text(line):
-        return link.sub(lambda m: m[0] if m[1] else f"{m[2]} ({m[3]})", line)
 
-    # リンクは「文字 (URL)」という文字にする。URL がどんな形でも同じ。
-    assert link_text("[公式](https://example.com/a) を見て") == "公式 (https://example.com/a) を見て"
-    assert link_text("[危ない](javascript:window.mdXss=3)") == "危ない (javascript:window.mdXss=3)"
-    assert link_text("[Foo](https://en.wikipedia.org/wiki/Foo_(bar)) と [x](y)") == "Foo (https://en.wikipedia.org/wiki/Foo_(bar)) と x (y)"
-    # 本文の URL・画像・HTML のタグ・崩れたリンク・` で囲んだところは書かれたまま。
-    for line in (
-        "素の https://example.org/b も",
-        "![図](https://example.net/should-not-load.png)",
-        '<a href="https://example.com/c">タグのリンク</a>',
-        "[閉じない](https://example.com/d",
-        "[a [b] c](u)",
-        "[空白](https://example.com/e f)",
-        "[](https://example.com/f)",
-        "`[a](b)`",
-    ):
-        assert link_text(line) == line, line
-    # 対になっていない [ は書かれたまま残し、その後ろの崩れていないリンクだけを書き換える。
-    assert link_text("[a [b](u)") == "[a b (u)"
-    assert link_text("`[a](b)` と [c](d)") == "`[a](b)` と c (d)"
-    assert link_text("``[a](b)` [c](d)``") == "``[a](b)` [c](d)``"
-    # 見出し・項目・段落の各行で通す。自分の吹き出しは打ったとおり。
-    assert "element.textContent = linkText(heading[2].trimEnd());" in page
-    assert "level.item.append(linkText(item[3]));" in page
-    assert 'paragraph.append(document.createElement("br"), linkText(lists.length ? line.trimStart() : line));' in page
-    assert "paragraph.append(linkText(line.trimStart()));" in page
-    assert "paragraph.append(linkText(line));" in page
+def test_page_shows_links_as_text_and_leaves_images_bare_urls_tags_and_broken_links_as_written(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    # リンク・画像・本文の URL の書式はページの JS の正規表現そのもの。Python の re でも同じ意味になる書き方なので、取り出して試す。
+    patterns = {}
+    for name in ("LINK", "IMAGE", "BARE_URL"):
+        found = re.search(rf"const {name} = /(.+)/y;", page)
+        assert found, name
+        patterns[name] = re.compile(found.group(1))
+    link, image, bare_url = patterns["LINK"], patterns["IMAGE"], patterns["BARE_URL"]
+
+    # リンクは文字と URL に分ける。URL がどんな形でも同じで、対になった ( ) は 1 段まで URL に含める。
+    assert link.match("[公式](https://example.com/a) を見て").groups() == ("公式", "https://example.com/a")
+    assert link.match("[危ない](javascript:window.mdXss=3)").groups() == ("危ない", "javascript:window.mdXss=3")
+    assert link.match("[Foo](https://en.wikipedia.org/wiki/Foo_(bar)) と").groups() == ("Foo", "https://en.wikipedia.org/wiki/Foo_(bar)")
+    # 崩れたリンクはリンクとみなさない。対になっていない [ の後ろの崩れていないリンクだけを書き換える。
+    for broken in ("[閉じない](https://example.com/d", "[a [b] c](u)", "[空白](https://example.com/e f)", "[](https://example.com/f)"):
+        assert not link.match(broken), broken
+    assert not link.match("[a [b](u)") and link.match("[a [b](u)", 3).groups() == ("b", "u")
+    # 画像は ! から ) までを書かれたまま残す。
+    assert image.match("![図](https://example.net/should-not-load.png)")[0] == "![図](https://example.net/should-not-load.png)"
+    # 本文の URL は、最後の句読点と記号を含めずに書かれたまま残す。
+    assert bare_url.match("https://example.org/b も")[0] == "https://example.org/b"
+    assert bare_url.match("https://ex.com/path/_private_/ と")[0] == "https://ex.com/path/_private_/"
+    assert bare_url.match("https://a.com/x**")[0] == "https://a.com/x"
+    assert bare_url.match('https://example.com/c">タグのリンク</a>')[0] == 'https://example.com/c">タグのリンク'
+
+    # inlineNodes の中で、画像と本文の URL は記号を解釈せずに文字のまま、リンクは文字の側だけを解釈して「文字 (URL)」にする。
+    assert 'const verbatim = (char === "!" && matchAt(IMAGE, line, i)) || (char === "h" && matchAt(BARE_URL, line, i));' in page
+    assert "text += verbatim[0];" in page
+    assert 'const link = char === "[" && matchAt(LINK, line, i);' in page
+    assert "items.push(...inlineNodes(link[1]), ` (${link[2]})`);" in page
+    # 自分の吹き出しは打ったとおり。
     assert "body.textContent = text;" in page
