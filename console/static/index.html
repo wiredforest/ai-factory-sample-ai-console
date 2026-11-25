@@ -54,6 +54,10 @@
   .bubble .text pre { padding: 0.5rem 0.75rem; border-radius: 0.375rem; background: #f3f4f6; color: #1f2328; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.875em; white-space: pre; overflow-wrap: normal; overflow-x: auto; }
   .bubble .text pre.markdown { background: #fdf6e3; color: #5c4400; }
   .bubble .text pre code { font: inherit; }
+  .bubble .text .hl-keyword { color: #cf222e; }
+  .bubble .text .hl-string { color: #116329; }
+  .bubble .text .hl-comment { color: #6e7781; font-style: italic; }
+  .bubble .text .hl-number { color: #0550ae; }
   .bubble .text .code-info { color: #57606a; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8em; }
   .bubble .text .code-info + pre { margin-top: 0.25em; }
   .bubble .text :is(ul, ol) { padding-left: 2em; }
@@ -431,7 +435,76 @@
     return blocks;
   }
 
-  // 閉じたフェンスの中身を、字下げと改行を保ったコードブロックにする。言語はまだどれも色分けしない。
+  // 色分けする言語ごとの規則。コメントと文字列の書き方 (正規表現)、語の形、キーワードの一覧。
+  // 構文は解析せず、行ごと・語ごとに見る。コメントと文字列の中の語は、その一部として色分けする (キーワードにしない)。
+  const SCRIPT_HIGHLIGHT = {
+    comments: [String.raw`\/\/.*`, String.raw`\/\*[\s\S]*?\*\/`],
+    strings: [String.raw`"(?:\\.|[^"\\\n])*"`, String.raw`'(?:\\.|[^'\\\n])*'`, String.raw`\`(?:\\[\s\S]|[^\`\\])*\``],
+    word: String.raw`[A-Za-z_$][\w$]*`,
+    keywords: [
+      "const", "let", "var", "function", "return", "if", "else", "for", "while", "do", "switch", "case", "default",
+      "break", "continue", "class", "extends", "new", "this", "super", "import", "export", "from", "as", "async",
+      "await", "typeof", "instanceof", "in", "of", "try", "catch", "finally", "throw", "delete", "void", "yield",
+      "null", "undefined", "true", "false", "interface", "type", "enum", "implements", "readonly",
+    ],
+  };
+  const PYTHON_HIGHLIGHT = {
+    comments: [String.raw`#.*`],
+    strings: [
+      String.raw`"""[\s\S]*?"""`, String.raw`'''[\s\S]*?'''`,
+      String.raw`"(?:\\.|[^"\\\n])*"`, String.raw`'(?:\\.|[^'\\\n])*'`,
+    ],
+    word: String.raw`[A-Za-z_]\w*`,
+    keywords: [
+      "def", "return", "if", "elif", "else", "for", "while", "in", "is", "class", "import", "from", "as", "lambda",
+      "None", "True", "False", "and", "or", "not", "with", "try", "except", "finally", "raise", "pass", "break",
+      "continue", "yield", "global", "nonlocal", "assert", "del", "async", "await",
+    ],
+  };
+  const BASH_HIGHLIGHT = {
+    // # は行頭か空白の後だけがコメント ($# や ${#a} はコメントではない)。
+    comments: [String.raw`(?<!\S)#.*`],
+    strings: [String.raw`"(?:\\[\s\S]|[^"\\])*"`, String.raw`'[^']*'`],
+    word: String.raw`[A-Za-z_][\w-]*`,
+    keywords: [
+      "if", "then", "else", "elif", "fi", "for", "in", "do", "done", "while", "until", "case", "esac", "function",
+      "select", "return", "local", "export",
+    ],
+  };
+  // 色分けする言語の指定 (小文字にしたもの) と規則。ここに無い言語のブロックは色分けしない。
+  const HIGHLIGHT_RULES = new Map([
+    ["typescript", SCRIPT_HIGHLIGHT], ["ts", SCRIPT_HIGHLIGHT], ["javascript", SCRIPT_HIGHLIGHT], ["js", SCRIPT_HIGHLIGHT],
+    ["python", PYTHON_HIGHLIGHT], ["py", PYTHON_HIGHLIGHT],
+    ["bash", BASH_HIGHLIGHT], ["sh", BASH_HIGHLIGHT], ["shell", BASH_HIGHLIGHT],
+  ]);
+
+  // コードの文字を、規則に当たる部分だけ hl-* の span で包んだ文字のノードの並びにする。文字は足しも消しもしない。
+  // 左から、コメント・文字列・数値・語のうち先に始まるものを取る。同じ位置ならこの順に優先する。
+  function highlighted(source, rules) {
+    const number = String.raw`(?<![\w$.])\d+(?:\.\d+)?(?![\w$])`;
+    const pattern = new RegExp(
+      `(${rules.comments.join("|")})|(${rules.strings.join("|")})|(${number})|(${rules.word})`,
+      "g",
+    );
+    const keywords = new Set(rules.keywords);
+    const fragment = document.createDocumentFragment();
+    let last = 0;
+    for (const match of source.matchAll(pattern)) {
+      const [text, comment, string, digits] = match;
+      const kind = comment ? "comment" : string ? "string" : digits ? "number" : keywords.has(text) ? "keyword" : null;
+      if (!kind) continue;
+      if (match.index > last) fragment.append(source.slice(last, match.index));
+      const span = document.createElement("span");
+      span.className = `hl-${kind}`;
+      span.textContent = text;
+      fragment.append(span);
+      last = match.index + text.length;
+    }
+    if (last < source.length) fragment.append(source.slice(last));
+    return fragment;
+  }
+
+  // 閉じたフェンスの中身を、字下げと改行を保ったコードブロックにする。HIGHLIGHT_RULES にある言語だけ色分けする。
   function codeBlock(fence) {
     const pre = document.createElement("pre");
     const code = document.createElement("code");
@@ -441,6 +514,8 @@
     // 開きのフェンスの字下げの分だけ、中身の行の頭の空白を外す (CommonMark と同じ)。
     const indent = new RegExp(`^ {0,${fence.indent}}`);
     code.textContent = fence.lines.map((line) => line.replace(indent, "")).join("\n");
+    const rules = HIGHLIGHT_RULES.get(fence.lang.toLowerCase());
+    if (rules) code.replaceChildren(highlighted(code.textContent, rules));
     pre.append(code);
     return pre;
   }
