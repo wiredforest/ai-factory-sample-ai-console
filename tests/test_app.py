@@ -394,3 +394,26 @@ def test_page_shows_list_items_only_where_a_marker_is_followed_by_a_space(start_
     # 入れ子は親の項目の印より 2 文字以上深い字下げ。タブは 4 文字ぶん進める。
     assert "indent >= parent.indent + 2" in page
     assert 'char === "\\t" ? width + 4 - (width % 4)' in page
+
+
+def test_page_interprets_emphasis_and_inline_code_only_inside_assistant_headings_paragraphs_and_items(start_app):
+    page = start_app().get("/").body.decode("utf-8")
+    # 見出し・段落 (続きの行も)・項目・項目の中の段落の文字は、行ごとに inlineNodes で解釈してから入れる。
+    assert "element.append(...inlineNodes(heading[2].trimEnd()));" in page
+    assert "level.item.append(...inlineNodes(item[3]));" in page
+    assert 'paragraph.append(document.createElement("br"), ...inlineNodes(lists.length ? line.trimStart() : line));' in page
+    assert "paragraph.append(...inlineNodes(line.trimStart()));" in page
+    assert "paragraph.append(...inlineNodes(line));" in page
+    # 強調は strong、斜体は em、打ち消し線は del。インラインのコードの中身は解釈せず、文字のまま code に入れる。
+    assert 'document.createElement(closer.char === "~" ? "del" : used === 2 ? "strong" : "em")' in page
+    assert "code.textContent = line.slice(end, close);" in page
+    # 対にならなかった記号は、書かれたままの文字に戻す。語の中の _ は開きも閉じもしない。
+    assert "return items.map(literal);" in page
+    assert "return item.char ? item.char.repeat(item.count) : item;" in page
+    assert 'if (char === "_") {' in page
+    # 自分の発言は解釈しない。
+    assert "body.textContent = text;" in page
+    # インラインのコードは等幅で出す (コードブロックの code は pre の書式のまま)。
+    rule = re.search(r"\.bubble \.text :not\(pre\) > code \{([^}]*)\}", page)
+    assert rule
+    assert "monospace" in rule[1]
