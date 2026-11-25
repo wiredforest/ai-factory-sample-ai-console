@@ -83,3 +83,31 @@
 - **残っている制約**:
   - アプリの再起動を挟む手順 (ジャーニー 3 の 3・7) は、この校正では確かめていない。ラップのアプリ検査は `harness/RUNTIME.md` の手順で再起動まで行っている
   - `archon-loop` のアプリ検査は、ランタイムホストではなく `harness/RUNTIME.md` の手順でアプリを起動している。この校正が示すのは、ランタイム検証の判定が健全なことまで
+
+### 2026-11-25 — 4 回目 (フェーズ 4〜6 の削除・本物の AI・Markdown の表示がすべて入った後)
+
+- **検証したソース**: `5e79702e700ddb4ad9b37c73aa669b57033f917c` (アプリのコードは `main` の `dccd327` と同じ。差分は `harness/mutations/defects.json` だけ)。リソースは `runtime_resource.py prepare` でこのリビジョンに結び付けた (`source_tree` `294377d`、`resource_digest` `0a2663fe…`)
+- **アサーション**: 6 つ。前回の 4 つに 2 つを足した。どれも、`harness/RUNTIME.md` の「画面を確かめる」と同じく、自分で開いたスクリーンショットを主にして同じ時点の DOM と突き合わせ、両方が一致してページのエラーが無いときだけ合格とするよう求めた
+  - `delete-only-the-chosen-conversation`: りんごの話の「削除」を押し、確認のダイアログを受ける。履歴にみかんの話だけが残り、読み直しても 1 件で、開くとみかんの話の 2 つの吹き出しが出る
+  - `own-text-shown-as-typed`: `**太字** と _斜体_` を送る。自分の吹き出しは記号を含めて打ったとおりの文字で、`strong`・`em` などの要素が無い。AI の吹き出し (偽の応答役が発言を繰り返す) では太字と斜体になる
+- **結果** (Archon の共有ワークフローのネイティブの戻り値):
+
+| 対照 | 候補 | 期待 | 結果 | 落ちたアサーション |
+|---|---|---|---|---|
+| 基準状態 | `factory-v1:0136078e…` | verified | verified (matched) | — |
+| `delete-hits-another-conversation` (画面が選んだのとは別の会話を消す) | `factory-v1:f5c8788d…` | failed | failed (matched)、`score-runtime` で CAUGHT | `delete-only-the-chosen-conversation` |
+| `own-text-interpreted` (自分の発言まで Markdown として解釈する) | `factory-v1:d09cfe16…` | failed | failed (matched)、`score-runtime` で CAUGHT | `own-text-shown-as-typed` |
+| `reopen-drops-first-bubble` (アンカーを直した後も、開き直すと最初の吹き出しが消える) | `factory-v1:611608fb…` | failed | failed (matched)、`score-runtime` で CAUGHT | `reopen-and-continue`、`delete-only-the-chosen-conversation` |
+| 別のビルドを指す識別値 (すべて 0) | 基準状態のスロット | inconclusive | inconclusive (`target identity does not match the requested candidate`) | — |
+
+  スイート `archon-verify-runtime-suite` `5855b72a…` は `expectations_passed: true`、`baseline_verified: true` (費用 $1.02)。識別値の対照は `archon-verify-runtime` `4ef363ac…`。検証担当は `agent-browser` で画面を操作し、スクリーンショットを 36 枚残した。欠陥入りでは、確認のダイアログが「りんごの話」を名指ししたのにみかんの話が消えたこと、自分の吹き出しが `<strong>太字</strong>` になったことを、スクリーンショットと DOM の両方で示した。`reopen-drops-first-bubble` で `delete-only-the-chosen-conversation` も落ちたのは、前の手順で状態がずれたため
+
+- **通常のチェックでの欠陥の検出** (22 件。1 件のアンカーを今のコードに合わせ、9 件を足した):
+  - CAUGHT (unit): 前回からの `health-says-not-ok`、`build-id-ignores-candidate`、`listens-on-all-interfaces`、`config-error-exits-zero`、`fake-down-rejected`、`default-llm-flipped`、`port-in-use-exits-zero`、`history-not-sent-to-ai`、`empty-history-message-hidden`、`conversation-not-continued` に加え、新しい `delete-without-confirm`、`bold-shown-as-italic`、`link-made-clickable`、`sources-dropped`、`key-rejected-looks-unreachable`、`truncation-unmarked`、`model-env-ignored`
+  - ESCAPED: `delete-hits-another-conversation`、`own-text-interpreted`、`history-oldest-first`、`reopen-drops-first-bubble`、`empty-history-message-invisible` (5 件とも、今回か前回までのランタイムの校正で捕まった)
+  - `reopen-drops-first-bubble` は、送れなかった本文を取り戻す処理 (#48) に同じ行ができてアンカーが 2 か所に一致し、`NOT_INJECTED` になっていた。会話を開き直す処理の側だけに当たるよう、前の行を含めて一意にした
+- **残っている制約**:
+  - 本物の AI の受け答え (S13〜S15) は、工場では偽の応答役でしか動かさない (不変条件 4)。欠陥はユニットテストでは捕まったが、ランタイムでは確かめていない
+  - 「サーバの状態が追いつく」(S11) と「別の会話を開いている間に失敗した本文を取り戻す」(S12) は、偽の応答役では起こしにくく、まだランタイムの欠陥を置いていない
+  - アプリの再起動を挟む手順は、前回と同じくこの校正では確かめていない
+  - `archon-loop` のアプリ検査は、ランタイムホストではなく `harness/RUNTIME.md` の手順でアプリを起動している。この校正が示すのは、ランタイム検証の判定が健全なことまで。2026-11-25 に `harness/RUNTIME.md` に入れた画面の確かめ方がラップで守られるかは、次にラップを回したときに見る
