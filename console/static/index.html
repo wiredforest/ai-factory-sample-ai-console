@@ -299,7 +299,7 @@
 
   // AI の応答の原文を Markdown のブロックとして読み、吹き出しの本文に並べる要素を返す。記録は原文のままで、出すたびにここで組み立てる。
   // 解釈するのは見出しと段落 (段落の中の改行は br) と箇条書きとコードブロックだけ。ほかの書式や HTML のタグは、書かれたままの文字として段落に入れる。
-  // 見出し・段落・項目の各行の中は inlineNodes で強調・斜体・打ち消し線・インラインのコードを解釈する。
+  // 見出し・段落・項目の各行の中は inlineNodes で強調・斜体・打ち消し線・インラインのコードを解釈し、リンク [文字](URL) を「文字 (URL)」という文字にする。
   // 箇条書きは、印 (-・*・+ か、数字と .) の後に空白が続く行。前の項目の印より 2 文字以上深く字下げした項目は、その項目の中の入れ子のリストにする。
   // 入れ子は何段でも同じ規則で深くする。
   // 行頭のフェンス (``` や ~~~) から閉じるフェンスまではコードブロック (pre の中の code) にし、中身は解釈せずに文字のまま入れる。
@@ -533,6 +533,8 @@
   // 解釈した文字と要素の並びにする。対になる記号が無い記号は、書かれたままの文字で残す。記号のほかの文字は足しも消しもしない。
   // インラインのコードは同じ数の ` で閉じたところまでで、中身は解釈せずに文字のまま入れる。
   // 記号は、後ろに空白でない文字が続けば開けて、前が空白でない文字なら閉じられる。_ は語の中 (snake_case_name) では開きも閉じもしない。
+  // リンク [文字](URL) は、クリックできるリンクにせず「文字 (URL)」という文字にする。文字の側は同じ規則で解釈し、URL は書かれたままの文字で入れる。
+  // 画像 ![説明](URL) と本文に直接書かれた URL も、解釈せずに書かれたままの文字で入れる (URL の中の _ や * を記号にしない)。
   function inlineNodes(line) {
     // 文字と code 要素と、まだ対になっていない記号の並び ({ char, count, canOpen, canClose })。
     const items = [];
@@ -540,6 +542,20 @@
     let i = 0;
     while (i < line.length) {
       const char = line[i];
+      const verbatim = (char === "!" && matchAt(IMAGE, line, i)) || (char === "h" && matchAt(BARE_URL, line, i));
+      if (verbatim) {
+        text += verbatim[0];
+        i += verbatim[0].length;
+        continue;
+      }
+      const link = char === "[" && matchAt(LINK, line, i);
+      if (link) {
+        if (text) items.push(text);
+        items.push(...inlineNodes(link[1]), ` (${link[2]})`);
+        text = "";
+        i += link[0].length;
+        continue;
+      }
       if (!"`*_~".includes(char)) {
         text += char;
         i++;
@@ -612,6 +628,20 @@
   // まだ対になっていない記号は、書かれたままの文字に戻す。
   function literal(item) {
     return item.char ? item.char.repeat(item.count) : item;
+  }
+
+  // リンク [文字](URL) の書式。文字に [ と ] を含まず、URL に空白を含まない (対になった ( ) は 1 段まで) ものだけをリンクとみなし、
+  // 崩れたリンクは書かれたまま残す。前に ! が付けば画像の書式。
+  const LINK = /\[([^[\]]+)\]\(((?:[^()\s]|\([^()\s]*\))+)\)/y;
+  const IMAGE = /!\[[^[\]]+\]\((?:[^()\s]|\([^()\s]*\))+\)/y;
+  // 本文に直接書かれた URL。URL に使える ASCII の文字 (英数字と -._~:/?#[]@!$&'()*+,;=%) が続くところまでで、
+  // 全角の文字 (（）、。など)・空白・< や " の手前で止まる。最後の句読点と記号 (?!.,:*_~) は URL に含めない (**https://…** の ** は強調の記号)。
+  const BARE_URL = /https?:\/\/[A-Za-z0-9\-._~:\/?#\[\]@!$&'()*+,;=%]*[A-Za-z0-9\-\/#\[\]@$&'()+;=%]/y;
+
+  // line の at の位置から pattern (y 付き) が合えばその結果。合わなければ null。
+  function matchAt(pattern, line, at) {
+    pattern.lastIndex = at;
+    return pattern.exec(line);
   }
 
   // from から先で、ちょうど count 個の ` が並ぶところの位置。無ければ -1。
