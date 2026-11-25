@@ -134,9 +134,72 @@
     {
       "id": "reopen-drops-first-bubble",
       "file": "console/static/index.html",
-      "find": "for (const message of messages) addBubble(",
-      "replace": "for (const message of messages.slice(1)) addBubble(",
+      "find": "unsentSend = null;\n    for (const message of messages) addBubble(",
+      "replace": "unsentSend = null;\n    for (const message of messages.slice(1)) addBubble(",
       "why": "履歴から開き直すと最初の発言が画面から消える (記録には残っている)。これが通るなら、開き直した会話の中身は画面では誰も確かめていない。"
+    },
+    {
+      "id": "delete-without-confirm",
+      "file": "console/static/index.html",
+      "find": "if (!window.confirm(`「${conversation.title}」を削除します。",
+      "replace": "if (false && !window.confirm(`「${conversation.title}」を削除します。",
+      "why": "取り消せない削除を、確かめずに送ってしまう。これが通るなら、削除の前に確かめる (S10) を誰も画面で確かめておらず、押し間違いで会話が消えうる。"
+    },
+    {
+      "id": "delete-hits-another-conversation",
+      "file": "console/static/index.html",
+      "find": "fetch(`/api/conversations/${conversation.id}`, { method: \"DELETE\" })",
+      "replace": "fetch(`/api/conversations/${conversation.id + 1}`, { method: \"DELETE\" })",
+      "why": "画面が選んだのとは別の会話を消す (API は正しく、画面の JS だけが壊れる)。これが通るなら、消したい会話だけが消え、ほかの会話が残ることを誰も画面の操作で確かめていない。"
+    },
+    {
+      "id": "own-text-interpreted",
+      "file": "console/static/index.html",
+      "find": "if (role === \"assistant\") {",
+      "replace": "if (role) {",
+      "why": "自分の発言まで Markdown として解釈し、打ったとおりの文字で出さない。これが通るなら、MISSION の決定事項 (自分の発言は解釈しない) を誰も確かめていない。"
+    },
+    {
+      "id": "bold-shown-as-italic",
+      "file": "console/static/index.html",
+      "find": "used === 2 ? \"strong\" : \"em\"",
+      "replace": "used === 2 ? \"em\" : \"em\"",
+      "why": "** で囲んだ強調が斜体になる。要素は作られ文字も残るので、文字列だけ見る検査は通る。これが通るなら、装飾の種類 (S16) は画面では誰も確かめていない。"
+    },
+    {
+      "id": "link-made-clickable",
+      "file": "console/static/index.html",
+      "find": "items.push(...inlineNodes(link[1]), ` (${link[2]})`);",
+      "replace": "items.push(Object.assign(document.createElement(\"a\"), { href: link[2], textContent: link[1] }));",
+      "why": "応答のリンクを、クリックできる a 要素にする。javascript: の URL でスクリプトが動く入口になる。これが通るなら、MISSION の決定事項 (リンクはクリックできるようにしない) を誰も守っていない。"
+    },
+    {
+      "id": "sources-dropped",
+      "file": "console/llm.py",
+      "find": "    if not found:\n        return text",
+      "replace": "    if True:\n        return text",
+      "why": "検索した応答の出典の欄を黙って落とす。これが通るなら、出典の URL を添える (S14) を誰も確かめていない。工場は本物の AI を呼ばないので、ユニットテストだけが守る。"
+    },
+    {
+      "id": "key-rejected-looks-unreachable",
+      "file": "console/llm.py",
+      "find": "if code in (401, 403):",
+      "replace": "if code in ():",
+      "why": "鍵の誤り (401・403) を「繋がらない」と同じに扱い、鍵を直せばよいと分からない。これが通るなら、失敗の理由を見分ける (S13) を誰も確かめていない。"
+    },
+    {
+      "id": "truncation-unmarked",
+      "file": "console/llm.py",
+      "find": "if stop_reason == \"max_tokens\":",
+      "replace": "if stop_reason == \"max-tokens\":",
+      "why": "途中で切れた応答を、切れたと知らせずに完成した応答のように出す。これが通るなら、途中で切れた応答を見分ける (S13) を誰も確かめていない。"
+    },
+    {
+      "id": "model-env-ignored",
+      "file": "console/config.py",
+      "find": "model = os.environ.get(\"CONSOLE_MODEL\", \"\") or DEFAULT_MODEL",
+      "replace": "model = DEFAULT_MODEL",
+      "why": "CONSOLE_MODEL を無視していつも既定のモデルを使う。これが通るなら、モデルを環境変数で選べる (S15) を誰も確かめていない。"
     }
   ],
   "_aiming_is_not_landing": [
