@@ -439,11 +439,23 @@ def test_page_shows_links_as_text_and_leaves_images_bare_urls_tags_and_broken_li
     assert not link.match("[a [b](u)") and link.match("[a [b](u)", 3).groups() == ("b", "u")
     # 画像は ! から ) までを書かれたまま残す。
     assert image.match("![図](https://example.net/should-not-load.png)")[0] == "![図](https://example.net/should-not-load.png)"
-    # 本文の URL は、最後の句読点と記号を含めずに書かれたまま残す。
+    # 本文の URL は、最後の句読点と記号を含めずに書かれたまま残す。URL の中の _ と * は記号にしない。
     assert bare_url.match("https://example.org/b も")[0] == "https://example.org/b"
     assert bare_url.match("https://ex.com/path/_private_/ と")[0] == "https://ex.com/path/_private_/"
+    assert bare_url.match("https://example.com/*a*/_b_ と")[0] == "https://example.com/*a*/_b"
     assert bare_url.match("https://a.com/x**")[0] == "https://a.com/x"
-    assert bare_url.match('https://example.com/c">タグのリンク</a>')[0] == 'https://example.com/c">タグのリンク'
+    assert bare_url.match("https://example.com/q?a=1&b=2#top.")[0] == "https://example.com/q?a=1&b=2#top"
+    assert bare_url.match('https://example.com/c">タグのリンク</a>')[0] == "https://example.com/c"
+    # 本文の URL は URL に使える ASCII の文字のところまで。日本語の文で空白なしに続く全角の文字の手前で止まり、
+    # その後ろの強調・斜体・インラインのコードは解釈される (行の残りを書かれたままの文字にしない)。
+    for line, url in (
+        ("公式サイト（https://example.com/a）で**重要**と書かれています", "https://example.com/a"),
+        ("詳しくは https://example.com/a、`npm install` を実行します", "https://example.com/a"),
+        ("**https://example.com/a**。", "https://example.com/a"),
+        ("参照: https://example.com/a。*注意*してください", "https://example.com/a"),
+        ("詳しくは https://example.com/a を見て、**重要**です", "https://example.com/a"),
+    ):
+        assert bare_url.search(line)[0] == url, line
 
     # inlineNodes の中で、画像と本文の URL は記号を解釈せずに文字のまま、リンクは文字の側だけを解釈して「文字 (URL)」にする。
     assert 'const verbatim = (char === "!" && matchAt(IMAGE, line, i)) || (char === "h" && matchAt(BARE_URL, line, i));' in page
